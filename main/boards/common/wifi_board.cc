@@ -20,6 +20,9 @@
 #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
 #include "blufi.h"
 #endif
+#ifdef CONFIG_USE_SIMPLE_BLE_PROVISIONING
+#include "ble_simple_prov.h"
+#endif
 
 static const char *TAG = "WifiBoard";
 
@@ -178,6 +181,37 @@ void WifiBoard::StartWifiConfigMode() {
     auto &blufi = Blufi::GetInstance();
     // initialize esp-blufi protocol
     blufi.init();
+#elif CONFIG_USE_SIMPLE_BLE_PROVISIONING
+    // 轻量 BLE 配网：浏览器通过 Web Bluetooth 写入 JSON 凭据
+    Application::GetInstance().Schedule([]() {
+        Application::GetInstance().Alert(
+            Lang::Strings::WIFI_CONFIG_MODE,
+            "请打开管理后台，使用「绑定设备」功能通过蓝牙配置 WiFi",
+            "gear",
+            Lang::Sounds::OGG_WIFICONFIG
+        );
+    });
+    BleSimpleProv::GetInstance().Start([this](const ProvCredentials& creds) {
+        ESP_LOGI("WifiBoard", "BLE provisioning received SSID=%s", creds.ssid.c_str());
+
+        // 保存 OTA URL（若有）到 NVS
+        if (!creds.ota_url.empty()) {
+            auto& settings = Settings::GetInstance();
+            settings.SetString("ota_url", creds.ota_url);
+            settings.Save();
+        }
+
+        // 保存 WiFi 凭据并触发连接
+        SsidManager::GetInstance().AddSsid(creds.ssid, creds.password);
+
+        BleSimpleProv::GetInstance().Stop();
+        in_config_mode_ = false;
+
+        // 通知 WifiBoard 进入连接流程
+        Application::GetInstance().Schedule([this]() {
+            OnNetworkEvent(NetworkEvent::WifiConfigModeExit);
+        });
+    });
 #endif
 #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
     // Start acoustic provisioning task

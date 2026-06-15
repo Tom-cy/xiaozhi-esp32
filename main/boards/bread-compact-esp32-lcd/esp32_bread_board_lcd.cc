@@ -54,7 +54,7 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
     {0xba, (uint8_t[]){0xFF, 0xFF}, 2, 0},
 };
 #endif
- 
+
 #define TAG "ESP32-LCD-MarsbearSupport"
 
 class CompactWifiBoardLCD : public WifiBoard {
@@ -104,11 +104,11 @@ private:
         gc9a01_vendor_config_t gc9107_vendor_config = {
             .init_cmds = gc9107_lcd_init_cmds,
             .init_cmds_size = sizeof(gc9107_lcd_init_cmds) / sizeof(gc9a01_lcd_init_cmd_t),
-        };        
+        };
 #else
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
 #endif
-        
+
         esp_lcd_panel_reset(panel);
 
         esp_lcd_panel_init(panel);
@@ -145,7 +145,7 @@ private:
         });
 
         asr_button_.OnClick([this]() {
-            std::string wake_word="你好小智";
+            std::string wake_word="小鹿小鹿";
             Application::GetInstance().WakeWordInvoke(wake_word);
         });
 
@@ -170,7 +170,7 @@ public:
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
-        
+
     }
 
     virtual AudioCodec* GetAudioCodec() override {

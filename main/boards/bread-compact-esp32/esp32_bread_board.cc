@@ -91,7 +91,7 @@ private:
     }
 
     void InitializeButtons() {
-        
+
         // 配置 GPIO
         gpio_config_t io_conf = {
             .pin_bit_mask = 1ULL << BUILTIN_LED_GPIO,  // 设置需要配置的 GPIO 引脚
@@ -113,7 +113,7 @@ private:
         });
 
         asr_button_.OnClick([this]() {
-            std::string wake_word="你好小智";
+            std::string wake_word="小鹿小鹿";
             Application::GetInstance().WakeWordInvoke(wake_word);
         });
 
@@ -141,7 +141,7 @@ public:
         InitializeTools();
     }
 
-    virtual AudioCodec* GetAudioCodec() override 
+    virtual AudioCodec* GetAudioCodec() override
     {
 #ifdef AUDIO_I2S_METHOD_SIMPLEX
         static NoAudioCodecSimplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
