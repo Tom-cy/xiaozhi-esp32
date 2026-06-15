@@ -153,7 +153,8 @@ static void StartAdvertising() {
 
 // ── NimBLE 主机同步回调 ─────────────────────────────────────────
 static void OnSync() {
-    ble_hs_util_ensure_addr(0);
+    uint8_t own_addr_type;
+    ble_hs_id_infer_auto(0, &own_addr_type);
     StartAdvertising();
 }
 

@@ -46,6 +46,8 @@ public:
     /** 停止 BLE，释放资源 */
     void Stop();
 
+    void HandleWrite(const uint8_t* data, size_t len);
+
     BleSimpleProv(const BleSimpleProv&) = delete;
     BleSimpleProv& operator=(const BleSimpleProv&) = delete;
 
@@ -56,7 +58,6 @@ private:
     ProvCallback callback_;
     bool started_ = false;
 
-    void HandleWrite(const uint8_t* data, size_t len);
     static void NimbleHostTask(void* param);
 };
 
