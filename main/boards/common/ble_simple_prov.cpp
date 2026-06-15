@@ -21,6 +21,39 @@
 
 static const char* TAG = "BleSimpleProv";
 
+// 是否保持广播：Start() 置 true，Stop() 置 false，防止拆栈期间误重启广播
+static volatile bool s_keep_advertising = false;
+
+// StartAdvertising 前向声明（GapEventCb 需要引用它）
+static void StartAdvertising();
+
+// ── GAP 事件回调：连接断开后自动重启广播 ──────────────────────────
+static int GapEventCb(struct ble_gap_event* event, void* /*arg*/) {
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT:
+            // 连接失败时立即恢复广播
+            if (event->connect.status != 0 && s_keep_advertising) {
+                StartAdvertising();
+            }
+            break;
+        case BLE_GAP_EVENT_DISCONNECT:
+            ESP_LOGI(TAG, "disconnect (reason=%d), restart advertising",
+                     event->disconnect.reason);
+            if (s_keep_advertising) {
+                StartAdvertising();
+            }
+            break;
+        case BLE_GAP_EVENT_ADV_COMPLETE:
+            if (s_keep_advertising) {
+                StartAdvertising();
+            }
+            break;
+        default:
+            break;
+    }
+    return 0;
+}
+
 // ── UUID 定义（128-bit，小端序） ───────────────────────────────
 // A0A0A0A0-1234-5678-9ABC-DEF012345678
 static const ble_uuid128_t SVC_UUID = {
@@ -152,7 +185,7 @@ static void StartAdvertising() {
     ble_gap_adv_rsp_set_fields(&rsp_fields);
 
     int rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, nullptr, BLE_HS_FOREVER,
-                               &adv_params, nullptr, nullptr);
+                               &adv_params, GapEventCb, nullptr);
     if (rc != 0) {
         ESP_LOGE(TAG, "adv_start failed: %d", rc);
     } else {
@@ -224,11 +257,13 @@ void BleSimpleProv::Start(ProvCallback on_received) {
     ble_gatts_add_svcs(GATT_SVCS);
 
     nimble_port_freertos_init(NimbleHostTask);
+    s_keep_advertising = true;
     ESP_LOGI(TAG, "BleSimpleProv started");
 }
 
 void BleSimpleProv::Stop() {
     if (!started_) return;
+    s_keep_advertising = false;   // 先关标志，防止 disconnect 回调在拆栈期间重启广播
     started_ = false;
     nimble_port_stop();
     esp_nimble_deinit();

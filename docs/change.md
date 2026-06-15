@@ -443,3 +443,68 @@ optionalServices: [BLE_PROV_SERVICE],
 | `main/boards/common/ble_simple_prov.cpp` | **真正根因修复**：补齐 BT 控制器 init/enable，完善 Stop() 对称清理 |
 | `build_ble.sh` | 规范化 sdkconfig 生成方式（非根因改进） |
 | `hair-admins/src/views/aiChat/deviceManager.vue` | BLE UUID 修正 + 扫描错误反馈修复 |
+
+---
+
+### 修复 5：`ble_simple_prov.cpp` — 断开连接后不再重新广播
+
+**现象**：固件开机后能正常广播 `Xiaozhi-27f4`（串口日志确认）；但只要任意 central（nRF Connect、浏览器 gatt.connect()、上一次配网中途取消）连上过一次，断开后设备永远停止广播，直到重启。浏览器 picker 自然空白，与过滤器无关。
+
+**根因**：BLE 协议规定可连接模式（`BLE_GAP_CONN_MODE_UND`）广播在被 central 连接后立即停止。`ble_gap_adv_start` 原来第 5 个参数（GAP 事件回调）传的是 `nullptr`，断开事件没有任何处理，广播就此停止：
+
+```
+开机 → 广播开始
+  → nRF Connect / 浏览器 gatt.connect() → 广播停止（协议要求）
+  → 断开 → 没有回调 → 广播不恢复
+  → 下次打开 picker → 扫描结果为空
+```
+
+**修复内容**（`main/boards/common/ble_simple_prov.cpp`）：
+
+1. 新增 `s_keep_advertising` 标志（`Start()` 置 true，`Stop()` 置 false），防止配网成功后或拆栈期间误重启广播：
+```cpp
+static volatile bool s_keep_advertising = false;
+```
+
+2. 新增 GAP 事件回调 `GapEventCb`，处理三种场景下的重新广播：
+```cpp
+static int GapEventCb(struct ble_gap_event* event, void* arg) {
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT:
+            // 连接失败时恢复广播
+            if (event->connect.status != 0 && s_keep_advertising) StartAdvertising();
+            break;
+        case BLE_GAP_EVENT_DISCONNECT:
+            // 连接断开后恢复广播 ← 关键修复
+            if (s_keep_advertising) StartAdvertising();
+            break;
+        case BLE_GAP_EVENT_ADV_COMPLETE:
+            if (s_keep_advertising) StartAdvertising();
+            break;
+    }
+    return 0;
+}
+```
+
+3. `ble_gap_adv_start` 第 5 参数从 `nullptr` 改为 `GapEventCb`：
+```cpp
+// 修复前
+ble_gap_adv_start(..., nullptr, nullptr);
+// 修复后
+ble_gap_adv_start(..., GapEventCb, nullptr);
+```
+
+4. `Start()` 末尾设置标志，`Stop()` 开头清除标志：
+```cpp
+// Start()
+s_keep_advertising = true;
+
+// Stop()
+s_keep_advertising = false;  // 先关标志，防止拆栈期间回调误重启广播
+```
+
+**逻辑闭环**：
+- 配网成功 → `HandleWrite` 触发 → `Stop()` → `s_keep_advertising = false` → 浏览器断开 BLE 不再重启广播
+- 配网失败 / nRF Connect 连了又断 → `GapEventCb` → 自动重启广播 → 无需重启设备即可再次被扫到
+
+**影响文件**：`main/boards/common/ble_simple_prov.cpp`
