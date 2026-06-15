@@ -196,9 +196,8 @@ void WifiBoard::StartWifiConfigMode() {
 
         // 保存 OTA URL（若有）到 NVS
         if (!creds.ota_url.empty()) {
-            auto& settings = Settings::GetInstance();
+            Settings settings("wifi", true);
             settings.SetString("ota_url", creds.ota_url);
-            settings.Save();
         }
 
         // 保存 WiFi 凭据并触发连接
