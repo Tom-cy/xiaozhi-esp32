@@ -176,9 +176,32 @@ void BleSimpleProv::Start(ProvCallback on_received) {
     started_  = true;
     callback_ = std::move(on_received);
 
+    // 防止重复初始化：若控制器已运行则跳过 init（配网失败后重试场景）
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
+        esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+        esp_err_t ret = esp_bt_controller_init(&bt_cfg);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_bt_controller_init failed: %s", esp_err_to_name(ret));
+            started_ = false;
+            return;
+        }
+    }
+
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
+        esp_err_t ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_bt_controller_enable failed: %s", esp_err_to_name(ret));
+            esp_bt_controller_deinit();
+            started_ = false;
+            return;
+        }
+    }
+
     esp_err_t ret = esp_nimble_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_nimble_init failed: %s", esp_err_to_name(ret));
+        esp_bt_controller_disable();
+        esp_bt_controller_deinit();
         started_ = false;
         return;
     }
@@ -199,6 +222,9 @@ void BleSimpleProv::Stop() {
     if (!started_) return;
     started_ = false;
     nimble_port_stop();
+    esp_nimble_deinit();
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
     ESP_LOGI(TAG, "BleSimpleProv stopped");
 }
 

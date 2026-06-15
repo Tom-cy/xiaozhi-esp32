@@ -315,73 +315,85 @@ endif()
 
 ---
 
-### 修复 2：`build_ble.sh` — CMakeCache 导致 SDKCONFIG_DEFAULTS 不生效（第二轮）
+### 修复 1（真正根因）：`ble_simple_prov.cpp` — BT 控制器初始化顺序缺失
 
-**根因**：第一轮修复后 BLE 仍然失败。分析 `CMakeLists.txt` 发现项目未设置 `SDKCONFIG_DEFAULTS`，CMake 将其缓存到 `build/CMakeCache.txt`。
+**根因**：通过对比同仓库 `blufi.cpp` 的正确实现，发现 `BleSimpleProv::Start()` 直接调用 `esp_nimble_init()`，漏掉了前置的两步控制器初始化。
 
-执行顺序问题：
-1. `idf.py set-target esp32s3` → 生成不含 BLE 的 `build/CMakeCache.txt`
-2. 创建 `sdkconfig.defaults.ble`
-3. `rm -f sdkconfig`
-4. `idf.py build -DSDKCONFIG_DEFAULTS=...` → **CMake 读旧缓存**，忽略命令行参数，BLE defaults 永远不生效
+```
+正确顺序（blufi.cpp 参考）：
+  1. esp_bt_controller_init(&bt_cfg)       ← 原代码缺失
+  2. esp_bt_controller_enable(BLE 模式)    ← 原代码缺失
+  3. esp_nimble_init()                      ← 原代码只有这步
 
-**第二轮修复**：调整脚本执行顺序，把 `sdkconfig.defaults.ble` 的创建移到 `set-target` 之前，并在 `set-target` 时就传入 `-DSDKCONFIG_DEFAULTS`，同时删除 `build/CMakeCache.txt` 清除旧缓存：
-
-```bash
-# 正确顺序
-cat > sdkconfig.defaults.ble << 'EOF' ...  # 1. 先创建 defaults 文件
-rm -f sdkconfig build/CMakeCache.txt        # 2. 清除旧缓存
-idf.py -DSDKCONFIG_DEFAULTS="...;sdkconfig.defaults.ble" set-target esp32s3  # 3. 写入新缓存
-idf.py build                                # 4. 从新缓存读到正确配置
+esp_nimble_init() 内部调 esp_nimble_hci_init() 建立 VHCI 传输层
+若控制器未 init + enable，VHCI 起不来 → 返回 ESP_FAIL
+→ 串口报 E (1997) BLE_INIT: hci inits failed
 ```
 
-**影响文件**：`build_ble.sh`
+**结论**：`build_ble.sh` 的 `CONFIG_BT_ENABLED` 等配置项本身没有问题，之前对 sdkconfig 和 CMakeCache 的所有修改均为误判方向，真正的问题纯粹是代码漏了两行。
+
+**修复内容**（`main/boards/common/ble_simple_prov.cpp`）：
+
+`Start()` 补齐三步初始化，用 `esp_bt_controller_get_status()` 防止重复初始化：
+```cpp
+// 1. 控制器 init
+if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    esp_bt_controller_init(&bt_cfg);
+}
+// 2. 控制器 enable
+if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
+    esp_bt_controller_enable(ESP_BT_MODE_BLE);
+}
+// 3. NimBLE 主机 init
+esp_nimble_init();
+```
+
+`Stop()` 补齐对称清理，防止第二次进配网模式时 `esp_bt_controller_init()` 因控制器已存在返回 `ESP_ERR_INVALID_STATE`：
+```cpp
+nimble_port_stop();
+esp_nimble_deinit();
+esp_bt_controller_disable();
+esp_bt_controller_deinit();
+```
 
 ---
 
-### 修复 3：`deviceManager.vue` — BLE UUID 错误
+### 附：`build_ble.sh` sdkconfig 方式改进（非根因，属规范化改进）
 
-**根因**：前端 BLE UUID 常量使用了 ESP-IDF 官方 `wifi_prov_mgr` 的标准 UUID，与固件自定义 UUID 完全不同，浏览器永远无法扫描到设备的 GATT 服务。
+原脚本 `cat >> sdkconfig` 直接追加配置跳过了 Kconfig 依赖解析，属于不规范做法，一并修正：
+
+- 改用 `sdkconfig.defaults.ble` 文件 + `-DSDKCONFIG_DEFAULTS` 参数
+- `set-target` 前先创建 defaults 文件并删除 `build/CMakeCache.txt`，防止旧缓存覆盖新参数
+- 正确顺序：创建 defaults → 删缓存 → `set-target`（含 SDKCONFIG_DEFAULTS）→ `build`
+
+---
+
+### 修复 2：`deviceManager.vue` — BLE UUID 错误
+
+**根因**：前端 BLE UUID 使用了 ESP-IDF 官方 `wifi_prov_mgr` 标准 UUID，与固件自定义 UUID 完全不同，浏览器无法扫描到正确的 GATT 服务。
 
 ```typescript
 // 修复前（错误）
-const BLE_PROV_SERVICE = '021a9004-0382-4aea-bff4-6b3f1c5adfb4';  // wifi_prov_mgr UUID
+const BLE_PROV_SERVICE = '021a9004-0382-4aea-bff4-6b3f1c5adfb4';
 const BLE_PROV_CONFIG  = '021aff52-0382-4aea-bff4-6b3f1c5adfb4';
 
-// 修复后（正确，与 ble_simple_prov.h 一致）
+// 修复后（与 ble_simple_prov.h 一致）
 const BLE_PROV_SERVICE = 'a0a0a0a0-1234-5678-9abc-def012345678';
 const BLE_PROV_CONFIG  = 'a0a0a0a1-1234-5678-9abc-def012345678';
 ```
 
-**影响文件**：`hair-admins/src/views/aiChat/deviceManager.vue`（第 414-415 行）
+**影响文件**：`hair-admins/src/views/aiChat/deviceManager.vue`
 
 ---
 
-### 修复 4：`deviceManager.vue` — 扫描无反馈问题
+### 修复 3：`deviceManager.vue` — 扫描无反馈问题
 
-**根因**：点击「开始扫描」无任何反应，有两个原因：
-1. `bleSupported` 检测未包含 `isSecureContext` 检查——HTTP 页面下 `'bluetooth' in navigator` 可能为 true，但 `requestDevice()` 静默失败，按钮看似可点实则无效
-2. `NotFoundError`（用户关闭蓝牙选择器 / 选择器内无设备）被完全静默吞掉，用户看不到任何提示
+**根因**：两个子问题：
+1. `bleSupported` 未检查 `isSecureContext`，HTTP 页面下按钮看似可点但静默失败
+2. `NotFoundError` 被完全吞掉，用户看不到任何提示
 
-**修复**：
-
-```typescript
-// bleSupported 增加安全上下文检查
-const bleSupported = ref(
-    typeof navigator !== 'undefined' &&
-    'bluetooth' in navigator &&
-    (typeof window === 'undefined' || window.isSecureContext)
-);
-
-// NotFoundError 改为有意义的提示而非静默忽略
-if (e?.name === 'NotFoundError') {
-    ElMessage.warning('选择器里没有找到设备，请确认 ESP32 已进入配网模式后重试');
-} else if (e?.name === 'SecurityError' || !window.isSecureContext) {
-    ElMessage.error('Web Bluetooth 需要 HTTPS 页面，请通过 https:// 访问后台');
-} else {
-    ElMessage.error(`扫描失败：${e?.message || '未知错误'}`);
-}
-```
+**修复**：`bleSupported` 增加 `isSecureContext` 检查；`NotFoundError` 改为友好提示；增加 `SecurityError` 处理并引导用户使用 HTTPS。
 
 **影响文件**：`hair-admins/src/views/aiChat/deviceManager.vue`
 
@@ -389,7 +401,8 @@ if (e?.name === 'NotFoundError') {
 
 ### 变更文件汇总
 
-| 文件 | 变更次数 | 说明 |
-|------|----------|------|
-| `build_ble.sh` | 2 轮修复 | sdkconfig 生成方式重构；CMakeCache 缓存问题修复 |
-| `hair-admins/src/views/aiChat/deviceManager.vue` | 1 次 | BLE UUID 修正 + 扫描错误反馈修复 |
+| 文件 | 说明 |
+|------|------|
+| `main/boards/common/ble_simple_prov.cpp` | **真正根因修复**：补齐 BT 控制器 init/enable，完善 Stop() 对称清理 |
+| `build_ble.sh` | 规范化 sdkconfig 生成方式（非根因改进） |
+| `hair-admins/src/views/aiChat/deviceManager.vue` | BLE UUID 修正 + 扫描错误反馈修复 |
