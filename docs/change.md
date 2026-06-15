@@ -1,5 +1,23 @@
 # 变更记录
 
+## 关于本文件
+
+本文件记录 xiaozhi-esp32 固件项目从基准版本开始的**所有代码变更**，包括 git 提交历史和未提交的调试修复过程。
+
+**用途：**
+- 快速了解项目做了哪些改动，改了哪些文件
+- 排查问题时回溯历史变更，判断某个 bug 是哪次改动引入的
+- 多人协作时同步修改背景，避免重复踩坑
+- 记录调试过程中发现的根因和解决方案，供后续参考
+
+**阅读指引：**
+- 第一节「提交历史」对应 git log，每次提交一行
+- 第二节「文件变更明细」说明每个文件改了什么、为什么改
+- 第三节「调试修复记录」记录未提交的调试过程（根因分析 + 修复方案）
+- 文件持续追加更新，最新变更在最后
+
+---
+
 > 基准提交：`4a68924a98d6d8a903962ca1b7ed4e183d8876e9`（tea）  
 > 统计截止：`98c9f99`（修复初始化问题）  
 > 统计时间：2026-06-15
@@ -269,3 +287,109 @@ endif()
 ```
 
 触发时机：设备无已保存 WiFi 时自动进入配网模式并开始 BLE 广播。
+
+---
+
+## 调试修复记录（2026-06-15，未提交工作变更）
+
+### 问题背景
+
+串口日志显示 `BLE_INIT: hci inits failed` / `esp_nimble_init failed: ESP_FAIL`，设备 BLE 始终无法启动；前端「开始扫描」点击无反应。通过系统性分析串口日志与代码，定位到 4 个独立根因并逐一修复。
+
+---
+
+### 修复 1：`build_ble.sh` — sdkconfig 生成方式错误（第一轮）
+
+**根因**：原脚本用 `cat >> sdkconfig` 直接追加 BLE 配置项到已有 sdkconfig，跳过了 Kconfig 依赖解析。`CONFIG_BT_ENABLED=y` 只是顶层开关，BT 控制器还需要数十个子配置项（HCI transport、控制器模式、WiFi+BLE 共存等），缺失这些项导致 `ble_controller_init()` 在 `esp_bt_controller_init()` 内部失败，报 `hci inits failed`。
+
+**第一轮修复**：改用 `SDKCONFIG_DEFAULTS` 机制，由 ESP-IDF 构建系统在生成 sdkconfig 时自动解析所有 Kconfig 依赖，并补充以下关键配置：
+
+| 配置项 | 说明 |
+|--------|------|
+| `CONFIG_BT_CONTROLLER_ENABLED=y` | 显式启用 ESP32-S3 BT 控制器 |
+| `CONFIG_BT_LE_ENABLED=y` | 显式启用 BLE（ESP32-S3 不支持 Classic BT） |
+| `CONFIG_BT_CTRL_MODE_BLE_ONLY=y` | 控制器模式：仅 BLE |
+| `CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y` | NimBLE 广播者角色 |
+| `CONFIG_ESP_COEX_ENABLED=y` | 启用 WiFi + BLE 共存 |
+| `CONFIG_SW_COEXIST_ENABLE=y` | 软件共存调度（WiFi+BLE 同时工作必须） |
+
+---
+
+### 修复 2：`build_ble.sh` — CMakeCache 导致 SDKCONFIG_DEFAULTS 不生效（第二轮）
+
+**根因**：第一轮修复后 BLE 仍然失败。分析 `CMakeLists.txt` 发现项目未设置 `SDKCONFIG_DEFAULTS`，CMake 将其缓存到 `build/CMakeCache.txt`。
+
+执行顺序问题：
+1. `idf.py set-target esp32s3` → 生成不含 BLE 的 `build/CMakeCache.txt`
+2. 创建 `sdkconfig.defaults.ble`
+3. `rm -f sdkconfig`
+4. `idf.py build -DSDKCONFIG_DEFAULTS=...` → **CMake 读旧缓存**，忽略命令行参数，BLE defaults 永远不生效
+
+**第二轮修复**：调整脚本执行顺序，把 `sdkconfig.defaults.ble` 的创建移到 `set-target` 之前，并在 `set-target` 时就传入 `-DSDKCONFIG_DEFAULTS`，同时删除 `build/CMakeCache.txt` 清除旧缓存：
+
+```bash
+# 正确顺序
+cat > sdkconfig.defaults.ble << 'EOF' ...  # 1. 先创建 defaults 文件
+rm -f sdkconfig build/CMakeCache.txt        # 2. 清除旧缓存
+idf.py -DSDKCONFIG_DEFAULTS="...;sdkconfig.defaults.ble" set-target esp32s3  # 3. 写入新缓存
+idf.py build                                # 4. 从新缓存读到正确配置
+```
+
+**影响文件**：`build_ble.sh`
+
+---
+
+### 修复 3：`deviceManager.vue` — BLE UUID 错误
+
+**根因**：前端 BLE UUID 常量使用了 ESP-IDF 官方 `wifi_prov_mgr` 的标准 UUID，与固件自定义 UUID 完全不同，浏览器永远无法扫描到设备的 GATT 服务。
+
+```typescript
+// 修复前（错误）
+const BLE_PROV_SERVICE = '021a9004-0382-4aea-bff4-6b3f1c5adfb4';  // wifi_prov_mgr UUID
+const BLE_PROV_CONFIG  = '021aff52-0382-4aea-bff4-6b3f1c5adfb4';
+
+// 修复后（正确，与 ble_simple_prov.h 一致）
+const BLE_PROV_SERVICE = 'a0a0a0a0-1234-5678-9abc-def012345678';
+const BLE_PROV_CONFIG  = 'a0a0a0a1-1234-5678-9abc-def012345678';
+```
+
+**影响文件**：`hair-admins/src/views/aiChat/deviceManager.vue`（第 414-415 行）
+
+---
+
+### 修复 4：`deviceManager.vue` — 扫描无反馈问题
+
+**根因**：点击「开始扫描」无任何反应，有两个原因：
+1. `bleSupported` 检测未包含 `isSecureContext` 检查——HTTP 页面下 `'bluetooth' in navigator` 可能为 true，但 `requestDevice()` 静默失败，按钮看似可点实则无效
+2. `NotFoundError`（用户关闭蓝牙选择器 / 选择器内无设备）被完全静默吞掉，用户看不到任何提示
+
+**修复**：
+
+```typescript
+// bleSupported 增加安全上下文检查
+const bleSupported = ref(
+    typeof navigator !== 'undefined' &&
+    'bluetooth' in navigator &&
+    (typeof window === 'undefined' || window.isSecureContext)
+);
+
+// NotFoundError 改为有意义的提示而非静默忽略
+if (e?.name === 'NotFoundError') {
+    ElMessage.warning('选择器里没有找到设备，请确认 ESP32 已进入配网模式后重试');
+} else if (e?.name === 'SecurityError' || !window.isSecureContext) {
+    ElMessage.error('Web Bluetooth 需要 HTTPS 页面，请通过 https:// 访问后台');
+} else {
+    ElMessage.error(`扫描失败：${e?.message || '未知错误'}`);
+}
+```
+
+**影响文件**：`hair-admins/src/views/aiChat/deviceManager.vue`
+
+---
+
+### 变更文件汇总
+
+| 文件 | 变更次数 | 说明 |
+|------|----------|------|
+| `build_ble.sh` | 2 轮修复 | sdkconfig 生成方式重构；CMakeCache 缓存问题修复 |
+| `hair-admins/src/views/aiChat/deviceManager.vue` | 1 次 | BLE UUID 修正 + 扫描错误反馈修复 |

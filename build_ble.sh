@@ -45,19 +45,9 @@ fi
 IDF_VER=$(idf.py --version 2>&1 | head -1)
 info "ESP-IDF: $IDF_VER"
 
-# ── 清理旧构建（可选，加 --clean 参数触发）───────────────────
-if [[ "$1" == "--clean" ]]; then
-    warn "清理旧构建目录..."
-    rm -rf build sdkconfig
-fi
-
-# ── 设置目标芯片 ─────────────────────────────────────────────
-info "设置目标芯片: $TARGET"
-idf.py set-target "$TARGET"
-
-# ── 生成 BLE 专用 sdkconfig defaults ────────────────────────
-# 不能直接追加 sdkconfig：BT 控制器有大量依赖子配置需要 Kconfig 解析才能补全
-# 正确做法：写入 defaults 文件，由 ESP-IDF 构建系统自动解析所有依赖
+# ── 先生成 BLE defaults 文件（必须在 set-target 之前）────────
+# CMake 把 SDKCONFIG_DEFAULTS 缓存到 build/CMakeCache.txt
+# 只有在 set-target 时传入才会写入缓存，之后 build 才能正确读到
 info "生成 sdkconfig.defaults.ble..."
 cat > sdkconfig.defaults.ble << 'EOF'
 # BLE 配网变体专用配置（bread-compact-wifi-ble）
@@ -89,16 +79,26 @@ CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20
 CONFIG_SR_MN_CN_MULTINET7_QUANT=y
 EOF
 
-# 删除旧 sdkconfig，强制从 defaults 重新生成，确保 BT 所有依赖子项正确解析
-rm -f sdkconfig
-info "已删除旧 sdkconfig，将从 defaults 重新生成"
+# ── 清理旧构建（可选，加 --clean 参数触发）───────────────────
+if [[ "$1" == "--clean" ]]; then
+    warn "清理旧构建目录..."
+    rm -rf build sdkconfig
+fi
+
+# ── 删除 CMake 缓存和 sdkconfig，确保 BLE 配置被正确写入 ──────
+# CMakeCache.txt 缓存旧的 SDKCONFIG_DEFAULTS，必须删除才能让新值生效
+rm -f sdkconfig build/CMakeCache.txt
+info "已清除旧 sdkconfig 和 CMake 缓存"
+
+# ── 设置目标芯片（同时写入 SDKCONFIG_DEFAULTS 到新 CMakeCache）─
+info "设置目标芯片: $TARGET（含 BLE defaults）"
+idf.py \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.ble" \
+  set-target "$TARGET"
 
 # ── 构建 ─────────────────────────────────────────────────────
 info "开始构建（约 3-8 分钟）..."
-idf.py \
-  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.ble" \
-  -DBOARD_NAME="$VARIANT" -DBOARD_TYPE="$BOARD" \
-  build
+idf.py -DBOARD_NAME="$VARIANT" -DBOARD_TYPE="$BOARD" build
 
 # ── 合并为单文件 ─────────────────────────────────────────────
 info "合并 bin 文件..."
