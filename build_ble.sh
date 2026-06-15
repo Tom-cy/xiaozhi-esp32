@@ -66,10 +66,20 @@ CONFIG_OLED_SSD1306_128X32=y
 CONFIG_USE_HOTSPOT_WIFI_PROVISIONING=n
 CONFIG_USE_SIMPLE_BLE_PROVISIONING=y
 
-# BLE / NimBLE（由 Kconfig 依赖解析自动补全 HCI/coex 等子配置）
+# ── BLE 控制器（ESP32-S3 仅支持 BLE，不支持 Classic BT）──────
 CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_LE_ENABLED=y
+CONFIG_BT_CTRL_MODE_BLE_ONLY=y
+
+# ── NimBLE 主机 ───────────────────────────────────────────────
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+
+# ── WiFi + BLE 共存（必须，否则 ble_controller_init 失败）────
+CONFIG_ESP_COEX_ENABLED=y
+CONFIG_SW_COEXIST_ENABLE=y
 
 # 自定义唤醒词（小鹿小鹿）
 CONFIG_USE_CUSTOM_WAKE_WORD=y
@@ -99,17 +109,12 @@ MERGED="build/merged-binary.bin"
 SIZE=$(du -sh "$MERGED" 2>/dev/null | cut -f1)
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  构建成功！                               ║${NC}"
+echo -e "${GREEN}║  构建 + 烧录完成！                        ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  输出文件: ${MERGED}${NC}"
 echo -e "${GREEN}║  文件大小: ${SIZE}${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║  烧录命令（设备连接到 USB 后执行）:       ║${NC}"
-echo -e "${GREEN}║  idf.py flash                            ║${NC}"
-echo -e "${GREEN}║  或:                                     ║${NC}"
-echo -e "${GREEN}║  esptool.py --chip esp32s3 \\             ║${NC}"
-echo -e "${GREEN}║    --baud 921600 write_flash \\           ║${NC}"
-echo -e "${GREEN}║    0x0 build/merged-binary.bin           ║${NC}"
+echo -e "${GREEN}║  查看日志：idf.py monitor                ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 info "BLE 设备名将广播为 \"Xiaozhi-XXXX\"（MAC 后 4 位）"

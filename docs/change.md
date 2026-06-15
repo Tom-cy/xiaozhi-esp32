@@ -6,6 +6,99 @@
 
 ---
 
+## 调试修复记录（2026-06-15，未提交工作变更）
+
+### 问题背景
+
+串口日志显示 `BLE_INIT: hci inits failed` / `esp_nimble_init failed: ESP_FAIL`，设备 BLE 始终无法启动；前端「开始扫描」点击无反应。通过系统性分析串口日志与代码，定位到 3 个独立根因并逐一修复。
+
+---
+
+### 修复 1：`build_ble.sh` — sdkconfig 生成方式错误
+
+**根因**：原脚本用 `cat >> sdkconfig` 直接追加 BLE 配置项到已有 sdkconfig，跳过了 Kconfig 依赖解析。`CONFIG_BT_ENABLED=y` 只是顶层开关，BT 控制器还需要数十个子配置项（HCI transport、控制器模式、WiFi+BLE 共存等），缺失这些项导致 `ble_controller_init()` 在 `esp_bt_controller_init()` 内部失败，报 `hci inits failed`。
+
+**修复**：改用 `SDKCONFIG_DEFAULTS` 机制，由 ESP-IDF 构建系统在生成 sdkconfig 时自动解析所有 Kconfig 依赖。
+
+变更内容：
+- 新增 `sdkconfig.defaults.ble` 文件（脚本运行时生成），包含完整 BLE 所需配置
+- 每次构建前自动删除旧 sdkconfig（`rm -f sdkconfig`），强制从 defaults 重新生成
+- `idf.py build` 改为带 `-DSDKCONFIG_DEFAULTS` 参数调用
+
+新增的关键配置项：
+
+| 配置项 | 说明 |
+|--------|------|
+| `CONFIG_BT_CONTROLLER_ENABLED=y` | 显式启用 ESP32-S3 BT 控制器 |
+| `CONFIG_BT_LE_ENABLED=y` | 显式启用 BLE（ESP32-S3 不支持 Classic BT） |
+| `CONFIG_BT_CTRL_MODE_BLE_ONLY=y` | 控制器模式：仅 BLE |
+| `CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y` | NimBLE 广播者角色（peripheral 依赖） |
+| `CONFIG_ESP_COEX_ENABLED=y` | 启用 WiFi + BLE 共存 |
+| `CONFIG_SW_COEXIST_ENABLE=y` | 软件共存调度（WiFi+BLE 同时工作必须） |
+
+**影响文件**：`build_ble.sh`
+
+---
+
+### 修复 2：`deviceManager.vue` — BLE UUID 错误
+
+**根因**：前端 BLE UUID 常量使用了 ESP-IDF 官方 `wifi_prov_mgr` 的标准 UUID，与固件自定义 UUID 完全不同，浏览器永远无法扫描到设备的 GATT 服务。
+
+```typescript
+// 修复前（错误）
+const BLE_PROV_SERVICE = '021a9004-0382-4aea-bff4-6b3f1c5adfb4';  // wifi_prov_mgr UUID
+const BLE_PROV_CONFIG  = '021aff52-0382-4aea-bff4-6b3f1c5adfb4';
+
+// 修复后（正确，与 ble_simple_prov.h 一致）
+const BLE_PROV_SERVICE = 'a0a0a0a0-1234-5678-9abc-def012345678';
+const BLE_PROV_CONFIG  = 'a0a0a0a1-1234-5678-9abc-def012345678';
+```
+
+**影响文件**：`hair-admins/src/views/aiChat/deviceManager.vue`（第 414-415 行）
+
+---
+
+### 修复 3：`deviceManager.vue` — 扫描无反馈问题
+
+**根因**：点击「开始扫描」无任何反应，有两个原因：
+1. `bleSupported` 检测未包含 `isSecureContext` 检查——HTTP 页面下 `'bluetooth' in navigator` 可能为 true，但 `requestDevice()` 静默失败，按钮看似可点实则无效
+2. `NotFoundError`（用户关闭蓝牙选择器 / 选择器内无设备）被完全静默吞掉，用户看不到任何提示
+
+**修复**：
+
+```typescript
+// bleSupported 增加安全上下文检查
+const bleSupported = ref(
+    typeof navigator !== 'undefined' &&
+    'bluetooth' in navigator &&
+    (typeof window === 'undefined' || window.isSecureContext)
+);
+
+// NotFoundError 改为有意义的提示而非静默忽略
+if (e?.name === 'NotFoundError') {
+    ElMessage.warning('选择器里没有找到设备，请确认 ESP32 已进入配网模式后重试');
+} else if (e?.name === 'SecurityError' || !window.isSecureContext) {
+    ElMessage.error('Web Bluetooth 需要 HTTPS 页面，请通过 https:// 访问后台');
+} else {
+    ElMessage.error(`扫描失败：${e?.message || '未知错误'}`);
+}
+```
+
+**影响文件**：`hair-admins/src/views/aiChat/deviceManager.vue`（`bleSupported` 定义、`startBleScan` 错误处理、模板警告文案）
+
+---
+
+### 变更文件汇总
+
+| 文件 | 变更类型 | 说明 |
+|------|----------|------|
+| `build_ble.sh` | 修改 | sdkconfig 生成方式重构，补全 BLE 控制器及共存配置 |
+| `hair-admins/src/views/aiChat/deviceManager.vue` | 修改 | BLE UUID 修正 + 扫描错误反馈修复 |
+
+---
+
+---
+
 ## 总览
 
 | 指标 | 数值 |
