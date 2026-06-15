@@ -55,20 +55,23 @@ fi
 info "设置目标芯片: $TARGET"
 idf.py set-target "$TARGET"
 
-# ── 写入 sdkconfig ───────────────────────────────────────────
-info "写入 sdkconfig（BLE 配网模式）..."
-cat >> sdkconfig << 'EOF'
-
-# ── BLE 简易配网（by build_ble.sh） ──
+# ── 生成 BLE 专用 sdkconfig defaults ────────────────────────
+# 不能直接追加 sdkconfig：BT 控制器有大量依赖子配置需要 Kconfig 解析才能补全
+# 正确做法：写入 defaults 文件，由 ESP-IDF 构建系统自动解析所有依赖
+info "生成 sdkconfig.defaults.ble..."
+cat > sdkconfig.defaults.ble << 'EOF'
+# BLE 配网变体专用配置（bread-compact-wifi-ble）
 CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI=y
 CONFIG_OLED_SSD1306_128X32=y
 CONFIG_USE_HOTSPOT_WIFI_PROVISIONING=n
 CONFIG_USE_SIMPLE_BLE_PROVISIONING=y
+
+# BLE / NimBLE（由 Kconfig 依赖解析自动补全 HCI/coex 等子配置）
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 
-# ── 自定义唤醒词（小鹿小鹿） ──
+# 自定义唤醒词（小鹿小鹿）
 CONFIG_USE_CUSTOM_WAKE_WORD=y
 CONFIG_CUSTOM_WAKE_WORD="xiao lu xiao lu"
 CONFIG_CUSTOM_WAKE_WORD_DISPLAY="小鹿小鹿"
@@ -76,9 +79,16 @@ CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20
 CONFIG_SR_MN_CN_MULTINET7_QUANT=y
 EOF
 
+# 删除旧 sdkconfig，强制从 defaults 重新生成，确保 BT 所有依赖子项正确解析
+rm -f sdkconfig
+info "已删除旧 sdkconfig，将从 defaults 重新生成"
+
 # ── 构建 ─────────────────────────────────────────────────────
 info "开始构建（约 3-8 分钟）..."
-idf.py -DBOARD_NAME="$VARIANT" -DBOARD_TYPE="$BOARD" build
+idf.py \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.ble" \
+  -DBOARD_NAME="$VARIANT" -DBOARD_TYPE="$BOARD" \
+  build
 
 # ── 合并为单文件 ─────────────────────────────────────────────
 info "合并 bin 文件..."
