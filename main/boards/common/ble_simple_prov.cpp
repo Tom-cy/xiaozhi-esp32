@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "ble_simple_prov.h"
 
 #ifdef CONFIG_USE_SIMPLE_BLE_PROVISIONING

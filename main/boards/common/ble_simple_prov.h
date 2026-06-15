@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sdkconfig.h"
+
 #ifdef CONFIG_USE_SIMPLE_BLE_PROVISIONING
 
 #include <string>
