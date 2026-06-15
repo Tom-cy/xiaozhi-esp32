@@ -135,13 +135,22 @@ static void StartAdvertising() {
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
+    // 广播包：Flags + 设备名（31 字节限制内）
     struct ble_hs_adv_fields fields = {};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = reinterpret_cast<const uint8_t*>(dev_name.c_str());
     fields.name_len = dev_name.size();
     fields.name_is_complete = 1;
-
     ble_gap_adv_set_fields(&fields);
+
+    // 扫描响应包：服务 UUID（128-bit 不够放在广播包里，放这里）
+    // Chrome/Edge 做 Web Bluetooth 主动扫描时会收到此包，从而能按服务 UUID 过滤到本设备
+    struct ble_hs_adv_fields rsp_fields = {};
+    rsp_fields.uuids128 = (ble_uuid128_t*)&SVC_UUID;
+    rsp_fields.num_uuids128 = 1;
+    rsp_fields.uuids128_is_complete = 1;
+    ble_gap_adv_rsp_set_fields(&rsp_fields);
+
     int rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, nullptr, BLE_HS_FOREVER,
                                &adv_params, nullptr, nullptr);
     if (rc != 0) {

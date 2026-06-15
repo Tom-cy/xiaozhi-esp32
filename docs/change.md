@@ -399,6 +399,43 @@ const BLE_PROV_CONFIG  = 'a0a0a0a1-1234-5678-9abc-def012345678';
 
 ---
 
+### 修复 4：设备搜索不到 — 广播包缺少服务 UUID + 前端过滤器问题
+
+**现象**：BLE 广播正常（串口日志确认 `BLE advertising as "Xiaozhi-27f4"`），但浏览器 picker 里找不到该设备。
+
+**根因**：Chrome/Edge 执行 `requestDevice` 时，会把 `optionalServices` 里的 UUID 下发给操作系统作为 BLE 硬件扫描过滤器。固件广播包只包含设备名，没有服务 UUID，设备在 OS 层被过滤掉，名字过滤器根本来不及比对。
+
+```
+固件广播包（修复前）：[Flags] + [Complete Local Name: "Xiaozhi-27f4"]
+  → Chrome 把 a0a0a0a0-... 传给 OS 做硬件过滤 → OS 没看到该 UUID → 设备被丢弃
+  → picker 里永远看不到
+```
+
+**两处同步修复**：
+
+固件（`main/boards/common/ble_simple_prov.cpp`）：在 `StartAdvertising()` 加入扫描响应包，携带服务 UUID：
+```cpp
+// 广播包放设备名，扫描响应包放服务 UUID（128-bit 太长放不进广播包）
+struct ble_hs_adv_fields rsp_fields = {};
+rsp_fields.uuids128 = (ble_uuid128_t*)&SVC_UUID;
+rsp_fields.num_uuids128 = 1;
+rsp_fields.uuids128_is_complete = 1;
+ble_gap_adv_rsp_set_fields(&rsp_fields);
+```
+
+前端（`hair-admins/src/views/aiChat/deviceManager.vue`）：`requestDevice` filters 加入服务 UUID 条件（与名字前缀 OR 关系），让 Chrome 能按服务 UUID 匹配到扫描响应包里的数据：
+```typescript
+filters: [
+    { services: [BLE_PROV_SERVICE] },   // 服务 UUID 过滤（主要，配合固件扫描响应）
+    { namePrefix: 'Xiaozhi' },           // 名字前缀（备用）
+    { namePrefix: 'PROV_' },
+    { namePrefix: 'ESP' },
+],
+optionalServices: [BLE_PROV_SERVICE],
+```
+
+---
+
 ### 变更文件汇总
 
 | 文件 | 说明 |
