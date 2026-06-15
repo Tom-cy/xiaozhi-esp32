@@ -508,3 +508,39 @@ s_keep_advertising = false;  // 先关标志，防止拆栈期间回调误重启
 - 配网失败 / nRF Connect 连了又断 → `GapEventCb` → 自动重启广播 → 无需重启设备即可再次被扫到
 
 **影响文件**：`main/boards/common/ble_simple_prov.cpp`
+
+---
+
+### 修复 6：`wifi_board.cc` — BLE 回调里调 Stop() 导致 WiFi 永不连接
+
+**现象**：串口日志确认 BLE 成功收到 JSON 凭据（`Got SSID=CMCC-7KUE`）、NimBLE 已停止广播并断开连接，但此后设备只有 SystemInfo 心跳，永远不去连接 WiFi，不出现 `Starting WiFi connection attempt` 日志。
+
+**根因**：BLE GATT 写入回调链最终在 NimBLE 宿主任务（`NimbleHostTask`）里执行。原回调代码直接调用 `BleSimpleProv::Stop()`，`Stop()` 内部依次调用：
+```
+nimble_port_stop()    ← 向当前运行的事件循环发信号要求退出
+esp_nimble_deinit()   ← 在事件循环还未退出时就释放它的内部队列/内存
+esp_bt_controller_disable()
+esp_bt_controller_deinit()
+```
+在 NimBLE 事件循环内部释放自身资源属于不安全用法，导致 `nimble_port_run()` 退出后 `NimbleHostTask` 进入不确定状态。虽然 `Application::Schedule([this]() { OnNetworkEvent(WifiConfigModeExit); })` 已入队，但由于 NimBLE 任务状态异常，调度链未能执行，WiFi 连接流程永远不触发。
+
+**修复**：凭据已写入 NVS 后直接调用 `esp_restart()`，而非尝试在运行中切换 BLE→WiFi 栈。`esp_restart()` 可从任意上下文（包括 NimBLE 回调）安全调用，重启后 `TryWifiConnect()` 读到已保存的 SSID 走正常连接流程。
+
+```cpp
+// 修复前
+SsidManager::GetInstance().AddSsid(creds.ssid, creds.password);
+BleSimpleProv::GetInstance().Stop();         // ← 在 NimBLE 任务里拆自身，不安全
+in_config_mode_ = false;
+Application::GetInstance().Schedule([this]() {
+    OnNetworkEvent(NetworkEvent::WifiConfigModeExit);  // ← 不执行
+});
+
+// 修复后
+SsidManager::GetInstance().AddSsid(creds.ssid, creds.password);
+ESP_LOGI("WifiBoard", "WiFi credentials saved, restarting to connect...");
+esp_restart();   // ← 凭据已落盘，重启即可
+```
+
+同时新增 `#include <esp_system.h>` 头文件引用（`esp_restart()` 的声明）。
+
+**影响文件**：`main/boards/common/wifi_board.cc`

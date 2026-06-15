@@ -10,6 +10,7 @@
 #include <freertos/task.h>
 #include <esp_network.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <utility>
 
 #include <font_awesome.h>
@@ -205,16 +206,17 @@ void WifiBoard::StartWifiConfigMode() {
             settings.SetString("ota_url", creds.ota_url);
         }
 
-        // 保存 WiFi 凭据并触发连接
+        // 保存 WiFi 凭据到 NVS
         SsidManager::GetInstance().AddSsid(creds.ssid, creds.password);
 
-        BleSimpleProv::GetInstance().Stop();
-        in_config_mode_ = false;
-
-        // 通知 WifiBoard 进入连接流程
-        Application::GetInstance().Schedule([this]() {
-            OnNetworkEvent(NetworkEvent::WifiConfigModeExit);
-        });
+        // 注意：不在 NimBLE 回调里调 BleSimpleProv::Stop()。
+        // Stop() 内部的 nimble_port_stop() + esp_nimble_deinit() 在
+        // NimBLE 事件循环自身的任务里执行会释放自身的队列，之后的调度链
+        // 不可靠（Application::Schedule 入队但不执行）。
+        // 凭据已落盘，直接重启：启动时 TryWifiConnect() 读到已保存的
+        // SSID 会自动走正常 WiFi 连接流程。
+        ESP_LOGI("WifiBoard", "WiFi credentials saved, restarting to connect...");
+        esp_restart();
     });
 #endif
 #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
