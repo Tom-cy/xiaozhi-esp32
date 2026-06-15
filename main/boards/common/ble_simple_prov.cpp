@@ -176,7 +176,12 @@ void BleSimpleProv::Start(ProvCallback on_received) {
     started_  = true;
     callback_ = std::move(on_received);
 
-    esp_nimble_init();
+    esp_err_t ret = esp_nimble_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_nimble_init failed: %s", esp_err_to_name(ret));
+        started_ = false;
+        return;
+    }
 
     ble_hs_cfg.sync_cb  = OnSync;
     ble_hs_cfg.reset_cb = OnReset;

@@ -182,6 +182,11 @@ void WifiBoard::StartWifiConfigMode() {
     // initialize esp-blufi protocol
     blufi.init();
 #elif CONFIG_USE_SIMPLE_BLE_PROVISIONING
+    // 立即更新显示，在 BLE 初始化之前让用户看到配置模式
+    if (auto display = GetDisplay()) {
+        display->SetStatus(Lang::Strings::WIFI_CONFIG_MODE);
+        display->SetChatMessage("system", "蓝牙配网模式，请打开管理后台绑定设备");
+    }
     // 轻量 BLE 配网：浏览器通过 Web Bluetooth 写入 JSON 凭据
     Application::GetInstance().Schedule([]() {
         Application::GetInstance().Alert(
