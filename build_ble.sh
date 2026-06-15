@@ -73,6 +73,7 @@ CONFIG_USE_CUSTOM_WAKE_WORD=y
 CONFIG_CUSTOM_WAKE_WORD="xiao lu xiao lu"
 CONFIG_CUSTOM_WAKE_WORD_DISPLAY="小鹿小鹿"
 CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20
+CONFIG_SR_MN_CN_MULTINET7_QUANT=y
 EOF
 
 # ── 构建 ─────────────────────────────────────────────────────
