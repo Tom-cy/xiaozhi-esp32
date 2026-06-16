@@ -64,12 +64,21 @@ static const ble_uuid128_t SVC_UUID = {
     },
 };
 
-// A0A0A0A1-1234-5678-9ABC-DEF012345678
+// A0A0A0A1-1234-5678-9ABC-DEF012345678  (WRITE: WiFi config)
 static const ble_uuid128_t CFG_UUID = {
     .u = { .type = BLE_UUID_TYPE_128 },
     .value = {
         0x78, 0x56, 0x34, 0x12, 0xF0, 0xDE, 0xBC, 0x9A,
         0x78, 0x56, 0x34, 0x12, 0xA1, 0xA0, 0xA0, 0xA0,
+    },
+};
+
+// A0A0A0A2-1234-5678-9ABC-DEF012345678  (READ: device MAC address)
+static const ble_uuid128_t MAC_UUID = {
+    .u = { .type = BLE_UUID_TYPE_128 },
+    .value = {
+        0x78, 0x56, 0x34, 0x12, 0xF0, 0xDE, 0xBC, 0x9A,
+        0x78, 0x56, 0x34, 0x12, 0xA2, 0xA0, 0xA0, 0xA0,
     },
 };
 
@@ -133,6 +142,17 @@ void BleSimpleProv::HandleWrite(const uint8_t* data, size_t len) {
     }
 }
 
+// ── MAC 地址 READ 回调 ─────────────────────────────────────────
+static int GattReadMacCb(uint16_t conn_handle, uint16_t attr_handle,
+                         struct ble_gatt_access_ctxt* ctxt, void* arg) {
+    if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) {
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    std::string mac = SystemInfo::GetMacAddress();
+    int rc = os_mbuf_append(ctxt->om, mac.c_str(), mac.size());
+    return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
 // ── GATT 服务定义 ───────────────────────────────────────────────
 static const struct ble_gatt_svc_def GATT_SVCS[] = {
     {
@@ -143,6 +163,11 @@ static const struct ble_gatt_svc_def GATT_SVCS[] = {
                 .uuid = &CFG_UUID.u,
                 .access_cb = GattWriteCb,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &MAC_UUID.u,
+                .access_cb = GattReadMacCb,
+                .flags = BLE_GATT_CHR_F_READ,
             },
             { 0 },   // terminator
         },

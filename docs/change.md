@@ -544,3 +544,64 @@ esp_restart();   // ← 凭据已落盘，重启即可
 同时新增 `#include <esp_system.h>` 头文件引用（`esp_restart()` 的声明）。
 
 **影响文件**：`main/boards/common/wifi_board.cc`
+
+---
+
+### 新增 7：`ble_simple_prov.cpp` — 新增 MAC 地址 READ 特征（2026-06-16）
+
+**背景**：小程序 BLE 配网在 iOS 上存在两个连锁问题：
+
+1. iOS CoreBluetooth 出于隐私保护不暴露真实 MAC，`uni.onBluetoothDeviceFound` 返回的 `dev.deviceId` 是系统随机分配的 UUID（如 `CAC1B599-D679-1D3E-226F-6CB72165D1F9`），Android 上才是真实 MAC（如 `d8:85:ac:a2:27:f4`）
+2. 原 GATT 服务只有 `A0A0A0A1` 一个 WRITE 特征，客户端无法通过 BLE 主动读取设备的真实 MAC
+
+**直接影响**：小程序在 iOS 上将 iOS UUID 当作 MAC 地址写入 `ai_device` 表，导致设备记录无法与 xiaozhi-server 的在线状态关联（xiaozhi-server 使用真实 MAC 作为 device-id），`online` 字段始终为 false，设备管理功能完全失效。
+
+**修改内容**（`main/boards/common/ble_simple_prov.cpp`）：
+
+1. 新增 UUID 常量 `MAC_UUID`（`A0A0A0A2-1234-5678-9ABC-DEF012345678`）：
+```cpp
+// A0A0A0A2-1234-5678-9ABC-DEF012345678  (READ: device MAC address)
+static const ble_uuid128_t MAC_UUID = {
+    .u = { .type = BLE_UUID_TYPE_128 },
+    .value = {
+        0x78, 0x56, 0x34, 0x12, 0xF0, 0xDE, 0xBC, 0x9A,
+        0x78, 0x56, 0x34, 0x12, 0xA2, 0xA0, 0xA0, 0xA0,
+    },
+};
+```
+
+2. 新增 `GattReadMacCb` 回调，读取时返回 `SystemInfo::GetMacAddress()`（格式：`xx:xx:xx:xx:xx:xx` 小写）：
+```cpp
+static int GattReadMacCb(uint16_t conn_handle, uint16_t attr_handle,
+                         struct ble_gatt_access_ctxt* ctxt, void* arg) {
+    if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) return BLE_ATT_ERR_UNLIKELY;
+    std::string mac = SystemInfo::GetMacAddress();
+    int rc = os_mbuf_append(ctxt->om, mac.c_str(), mac.size());
+    return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+```
+
+3. GATT 服务表新增第二个特征（READ 属性）：
+```cpp
+{
+    .uuid = &MAC_UUID.u,
+    .access_cb = GattReadMacCb,
+    .flags = BLE_GATT_CHR_F_READ,
+},
+```
+
+**GATT 服务现状汇总**：
+
+| 特征值 UUID | 属性 | 用途 |
+|------------|------|------|
+| `A0A0A0A1-1234-5678-9ABC-DEF012345678` | WRITE / WRITE_NO_RSP | 接收 WiFi 配置 JSON（ssid、password、ota_url） |
+| `A0A0A0A2-1234-5678-9ABC-DEF012345678` | READ | 返回设备真实 MAC 地址（如 `d8:85:ac:a2:27:f4`） |
+
+**小程序侧配套修改**（`uniapp-operation/pages/tab/deviceBind.vue`）：
+- 新增 `BLE_MAC_CHAR_UUID` 常量对应 `A0A0A0A2`
+- BLE 连接成功后（CONNECTED 步骤）读取 MAC 特征，存入 `this.deviceMac`
+- Android 旧固件兼容：`dev.deviceId` 符合 MAC 正则时直接使用，无需 READ 特征
+- 获得真实 MAC 后立即调用 `miniBindDevice` 写入 `ai_device` 表，不再依赖轮询 `online: true`
+- 旧 iOS 固件降级路径：无 READ 特征时，等待设备在 xiaozhi-server 上线后再绑定
+
+**影响文件**：`main/boards/common/ble_simple_prov.cpp`
