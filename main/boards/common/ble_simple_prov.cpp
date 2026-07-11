@@ -185,7 +185,7 @@ static void StartAdvertising() {
         if (c != ':') suffix += c;
     }
     if (suffix.size() > 4) suffix = suffix.substr(suffix.size() - 4);
-    std::string dev_name = "JXM-" + suffix;
+    std::string dev_name = "Koala-" + suffix;
 
     ble_svc_gap_device_name_set(dev_name.c_str());
 

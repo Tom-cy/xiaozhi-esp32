@@ -267,6 +267,7 @@ bool IsAudioChannelOpened() const {
 - `password`：密码
 - `keepalive`：心跳间隔（默认240秒）
 - `publish_topic`：发布主题
+- `subscribe_topic`：订阅主题，用于接收服务端下行消息
 
 ### 6.2 音频参数
 

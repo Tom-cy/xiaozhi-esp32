@@ -284,6 +284,7 @@ Read from storage:
 - `password` - password.
 - `keepalive` - keep-alive interval (default 240 s).
 - `publish_topic` - publish topic.
+- `subscribe_topic` - subscribe topic for server-to-device messages.
 
 ### 6.2 Audio parameters
 

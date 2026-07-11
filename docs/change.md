@@ -605,3 +605,91 @@ static int GattReadMacCb(uint16_t conn_handle, uint16_t attr_handle,
 - 旧 iOS 固件降级路径：无 READ 特征时，等待设备在 xiaozhi-server 上线后再绑定
 
 **影响文件**：`main/boards/common/ble_simple_prov.cpp`
+
+---
+
+### 修复 8：`mqtt_protocol.cc` / `mqtt_protocol.h` — MQTT 标准 Broker 模式下订阅服务端下行 Topic（2026-07-11）
+
+**背景**：设备通过 BLE 配网后 OTA 地址、WiFi 账号密码均正确，OTA 接口也成功返回 MQTT 配置。Java 网关日志显示已经收到设备发布到 `device-server/D8_85_AC_A2_27_F4` 的 `hello`，并已向 `devices/p2p/D8_85_AC_A2_27_F4` 发布 hello reply；EMQX 日志也显示 Java 网关 publish 下行 topic 已授权。但 ESP32 串口仍报：
+
+```text
+MQTT: Failed to receive server hello
+```
+
+**根因**：原固件 MQTT 协议实现只读取并使用 `publish_topic`，用于把设备上行消息发布到服务端；没有读取 OTA 下发的 `subscribe_topic`，也没有在 MQTT 连接成功后主动订阅服务端下行 topic。
+
+在原 `xiaozhi-mqtt-gateway` 模式下，这个问题不明显，因为该网关不是标准 EMQX Broker 路由模型。它收到设备连接后保存设备 TCP socket，下行时直接对该 socket 写 MQTT PUBLISH，因此即使没有严格依赖订阅表，也能把消息写回设备。
+
+当前 Java + EMQX 实现是标准 MQTT Broker 模式：
+
+```text
+ESP32  publish   -> device-server/D8_85_AC_A2_27_F4
+Java   subscribe -> device-server/#
+Java   publish   -> devices/p2p/D8_85_AC_A2_27_F4
+ESP32  subscribe -> devices/p2p/D8_85_AC_A2_27_F4
+```
+
+在这种模式下，设备必须订阅 `subscribe_topic`，否则 EMQX 无法把 Java 发布的 hello reply / goodbye / mcp 等下行消息投递给设备。
+
+**修改内容**：
+
+1. `main/protocols/mqtt_protocol.h` 新增成员变量：
+
+```cpp
+std::string subscribe_topic_;
+```
+
+2. `main/protocols/mqtt_protocol.cc` 从 NVS MQTT 配置中读取 OTA 下发的 `subscribe_topic`：
+
+```cpp
+publish_topic_ = settings.GetString("publish_topic");
+subscribe_topic_ = settings.GetString("subscribe_topic");
+```
+
+3. MQTT 连接成功后主动订阅下行 topic：
+
+```cpp
+ESP_LOGI(TAG, "Connected to endpoint");
+if (!subscribe_topic_.empty()) {
+    if (!mqtt_->Subscribe(subscribe_topic_)) {
+        ESP_LOGE(TAG, "Failed to subscribe topic: %s", subscribe_topic_.c_str());
+        SetError(Lang::Strings::SERVER_ERROR);
+        return false;
+    }
+    ESP_LOGI(TAG, "Subscribed topic: %s", subscribe_topic_.c_str());
+} else {
+    ESP_LOGW(TAG, "MQTT subscribe_topic is not specified");
+}
+```
+
+4. 补充 MQTT/UDP 文档配置项说明：
+
+```text
+subscribe_topic：订阅主题，用于接收服务端下行消息
+```
+
+**验证预期**：
+
+刷入新固件后，设备连接 MQTT 时应出现：
+
+```text
+MQTT: Connected to endpoint
+MQTT: Subscribed topic: devices/p2p/D8_85_AC_A2_27_F4
+```
+
+EMQX 日志应出现设备订阅授权记录：
+
+```text
+clientid=esp32_D8_85_AC_A2_27_F4 topic=devices/p2p/D8_85_AC_A2_27_F4
+```
+
+随后设备应能收到 Java hello reply，进入 UDP 音频通道初始化流程，不再卡在 `Failed to receive server hello`。
+
+**影响文件**：
+
+| 文件 | 说明 |
+|------|------|
+| `main/protocols/mqtt_protocol.h` | 新增 `subscribe_topic_` 成员变量 |
+| `main/protocols/mqtt_protocol.cc` | 读取 `subscribe_topic`，连接 MQTT 后订阅服务端下行 topic |
+| `docs/mqtt-udp.md` | 英文文档补充 `subscribe_topic` 配置说明 |
+| `docs/mqtt-udp_zh.md` | 中文文档补充 `subscribe_topic` 配置说明 |

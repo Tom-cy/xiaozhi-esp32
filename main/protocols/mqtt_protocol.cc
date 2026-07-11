@@ -69,6 +69,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     auto password = settings.GetString("password");
     int keepalive_interval = settings.GetInt("keepalive", 240);
     publish_topic_ = settings.GetString("publish_topic");
+    subscribe_topic_ = settings.GetString("subscribe_topic");
 
     if (endpoint.empty()) {
         ESP_LOGW(TAG, "MQTT endpoint is not specified");
@@ -148,6 +149,16 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     }
 
     ESP_LOGI(TAG, "Connected to endpoint");
+    if (!subscribe_topic_.empty()) {
+        if (!mqtt_->Subscribe(subscribe_topic_)) {
+            ESP_LOGE(TAG, "Failed to subscribe topic: %s", subscribe_topic_.c_str());
+            SetError(Lang::Strings::SERVER_ERROR);
+            return false;
+        }
+        ESP_LOGI(TAG, "Subscribed topic: %s", subscribe_topic_.c_str());
+    } else {
+        ESP_LOGW(TAG, "MQTT subscribe_topic is not specified");
+    }
     return true;
 }
 
