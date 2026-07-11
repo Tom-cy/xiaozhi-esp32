@@ -205,6 +205,17 @@
 - 新增本文档，避免只从单次问题记录中理解当前代码。
 - 汇总所有主要源码、构建脚本和文档文件的最终改动结果。
 
+### `docs/macos-firmware-build.md`
+
+最终职责：记录 macOS 下构建、打包、烧录 BLE 固件的常用命令。
+
+主要修改：
+
+- 记录 ESP-IDF v5.5.2 首次安装命令。
+- 记录每次打开终端需要执行的 `source ~/esp/esp-idf/export.sh`。
+- 记录 `./build_ble.sh`、`./build_ble.sh --clean`、`idf.py flash`、`esptool.py write_flash` 等常用命令。
+- 记录 `idf.py` 找不到、Python 虚拟环境损坏、CMake 缓存等常见问题处理方式。
+
 ---
 
 ## 外部配套修改记录
