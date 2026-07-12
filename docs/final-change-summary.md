@@ -317,3 +317,46 @@ Java 网关应看到：
 ```text
 MQTT: Failed to receive server hello
 ```
+
+---
+
+## 2026-07-12 半双工连续对话最终模型
+
+本次把 ESP32 设备端、Java 服务端、MQTT/UDP 会话协议统一为半双工连续对话：
+
+```text
+唤醒 -> listening
+用户说一句 -> VAD silence / timeout -> listen stop
+Java ASR -> AI -> TTS
+TTS stop -> system continue_listening
+ESP32 进入下一轮 listening
+连续会话空闲超时 -> system end_session / no_speech_timeout -> idle
+```
+
+### ESP32 固件最终修改
+
+- `GetDefaultListeningMode()` 固定返回 `kListeningModeAutoStop`，连续对话也采用每轮自动停止录音。
+- TTS `stop` 后，非手动模式进入下一轮 `listening`，形成连续对话。
+- 新增连续会话状态：
+  - `continuous_conversation_active_`
+  - `continuous_idle_timeout_us_`
+- `MaybeAutoStopListening()` 根据是否处于连续会话选择 no-speech timeout。
+- 支持 Java 下发的 `system.command`：
+  - `continue_listening`
+  - `stop_listening`
+  - `end_session`
+
+### Java 服务端最终修改
+
+- `XiaozhiVoiceRuntime` 在 TTS 完成后下发 `system continue_listening`。
+- Java watchdog 超时会下发 `system stop_listening`，避免设备 UI 卡在聆听中。
+- 连续会话无语音超时会下发 `system end_session`。
+- 新增配置：
+
+```yaml
+ai.device.voice.conversation-idle-timeout-seconds: 12
+```
+
+### 设计结论
+
+连续对话不是 realtime 全双工，也不是一直录音，而是多个 AutoStop turn 串成一个 conversation session。每一轮用户语音都必须有明确的 `listen start -> UDP audio -> listen stop` 边界。

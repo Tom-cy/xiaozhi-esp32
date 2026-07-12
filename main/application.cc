@@ -11,6 +11,7 @@
 #include "settings.h"
 
 #include <cstring>
+#include <algorithm>
 #include <esp_log.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
@@ -544,8 +545,10 @@ void Application::InitializeProtocol() {
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
+                            continuous_conversation_active_ = false;
                             SetDeviceState(kDeviceStateIdle);
                         } else {
+                            continuous_conversation_active_ = true;
                             SetDeviceState(kDeviceStateListening);
                         }
                     }
@@ -587,6 +590,30 @@ void Application::InitializeProtocol() {
                     // Do a reboot if user requests a OTA update
                     Schedule([this]() {
                         Reboot();
+                    });
+                } else if (strcmp(command->valuestring, "continue_listening") == 0) {
+                    auto idle_timeout = cJSON_GetObjectItem(root, "idle_timeout");
+                    int timeout_seconds = cJSON_IsNumber(idle_timeout) ? idle_timeout->valueint : 12;
+                    Schedule([this, timeout_seconds]() {
+                        continuous_conversation_active_ = true;
+                        continuous_idle_timeout_us_ = std::max<int64_t>(3000000, (int64_t)timeout_seconds * 1000000);
+                        auto state = GetDeviceState();
+                        if (state == kDeviceStateIdle) {
+                            SetListeningMode(kListeningModeAutoStop);
+                        }
+                    });
+                } else if (strcmp(command->valuestring, "stop_listening") == 0) {
+                    Schedule([this]() {
+                        if (GetDeviceState() == kDeviceStateListening) {
+                            StopListening(kListeningStopReasonManual);
+                        }
+                    });
+                } else if (strcmp(command->valuestring, "end_session") == 0) {
+                    Schedule([this]() {
+                        continuous_conversation_active_ = false;
+                        if (GetDeviceState() == kDeviceStateListening) {
+                            SetDeviceState(kDeviceStateIdle);
+                        }
                     });
                 } else {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
@@ -968,7 +995,7 @@ void Application::SetListeningMode(ListeningMode mode) {
 }
 
 ListeningMode Application::GetDefaultListeningMode() const {
-    return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+    return kListeningModeAutoStop;
 }
 
 void Application::ResetListeningSilenceTimer() {
@@ -1002,7 +1029,17 @@ void Application::MaybeAutoStopListening(const char* source) {
             ESP_LOGI(TAG, "Listening VAD silence timeout from %s, auto stop listening", source);
             StopListening(kListeningStopReasonVadSilence);
         }
-    } else if (listening_started_at_us_ > 0 && now - listening_started_at_us_ >= kNoSpeechTimeoutUs) {
+    } else if (listening_started_at_us_ > 0) {
+        int64_t no_speech_timeout_us = continuous_conversation_active_
+            ? continuous_idle_timeout_us_
+            : kNoSpeechTimeoutUs;
+        if (now - listening_started_at_us_ < no_speech_timeout_us) {
+            return;
+        }
+        if (continuous_conversation_active_) {
+            ESP_LOGI(TAG, "Continuous conversation idle timeout from %s, auto end session", source);
+            continuous_conversation_active_ = false;
+        }
         ESP_LOGI(TAG, "Listening no speech timeout from %s, auto stop listening", source);
         StopListening(kListeningStopReasonNoSpeechTimeout);
     }

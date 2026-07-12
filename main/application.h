@@ -155,7 +155,9 @@ private:
     TaskHandle_t activation_task_handle_ = nullptr;
     int64_t listening_started_at_us_ = 0;
     int64_t last_voice_activity_at_us_ = 0;
+    int64_t continuous_idle_timeout_us_ = 12000000;
     bool listening_had_voice_ = false;
+    bool continuous_conversation_active_ = false;
     ListeningStopReason pending_listening_stop_reason_ = kListeningStopReasonManual;
 
 

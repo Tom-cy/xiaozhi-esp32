@@ -884,3 +884,33 @@ listen-stop-timeout-seconds = 15
 | `main/protocols/protocol.h` | `SendStopListening()` 支持 reason 参数 |
 | `main/protocols/protocol.cc` | `listen stop` JSON 新增可选 `reason` 字段 |
 | `CloudV3/modules/ai/.../XiaozhiVoiceRuntime.java` | Java 侧新增 listen watchdog |
+
+## 2026-07-12 修复 12：半双工连续对话状态机
+
+**目标**：把 ESP32 设备端、Java 服务端、MQTT/UDP 会话协议统一为“半双工连续对话”模型，而不是一直保持 `listening` 的 realtime 模型。
+
+**核心模型**：
+
+```text
+唤醒 -> listening
+用户说一句 -> VAD 静音 -> listen stop -> idle/等待服务端
+Java ASR / AI / TTS
+TTS stop -> continue_listening -> 下一轮 listening
+连续会话空闲超时 -> end_session -> idle
+```
+
+**固件修改**：
+
+1. `GetDefaultListeningMode()` 固定返回 `kListeningModeAutoStop`，连续对话也采用每轮 VAD 自动停止的半双工模型。
+2. TTS `stop` 后，非手动模式进入下一轮 `kDeviceStateListening`，并标记 `continuous_conversation_active_ = true`。
+3. 新增连续会话空闲超时字段：
+   - `continuous_conversation_active_`
+   - `continuous_idle_timeout_us_`
+   - `continuous_listening_started_at_us_`
+4. `MaybeAutoStopListening()` 在连续会话下一轮无语音时使用 `continuous_idle_timeout_us_`，超时后自动结束连续会话并发送 `listen stop`。
+5. 新增服务端 `system.command` 控制：
+   - `continue_listening`：进入下一轮 AutoStop listening，并可携带 `idle_timeout`。
+   - `stop_listening`：服务端 watchdog 兜底停止当前 listening。
+   - `end_session`：结束整场连续会话，设备回到 idle。
+
+**设计结论**：连续对话不是“永远录音”，而是“多个 AutoStop turn 串成一个 conversation session”。这样既保留连续体验，又避免红灯一直停在聆听中的问题。
