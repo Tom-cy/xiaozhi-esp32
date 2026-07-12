@@ -68,9 +68,16 @@ public:
     virtual void CloseAudioChannel(bool send_goodbye = true) = 0;
     virtual bool IsAudioChannelOpened() const = 0;
     virtual bool SendAudio(std::unique_ptr<AudioStreamPacket> packet) = 0;
-    virtual void SendWakeWordDetected(const std::string& wake_word);
-    virtual void SendStartListening(ListeningMode mode);
-    virtual void SendStopListening(const std::string& reason = "");
+    virtual void SendWakeWordDetected(const std::string& wake_word,
+                                      const std::string& conversation_id = "",
+                                      const std::string& turn_id = "");
+    virtual void SendStartListening(ListeningMode mode,
+                                    const std::string& conversation_id = "",
+                                    const std::string& turn_id = "");
+    virtual void SendStopListening(const std::string& reason = "",
+                                   const std::string& conversation_id = "",
+                                   const std::string& turn_id = "");
+    virtual void SendTtsReady(const std::string& conversation_id, const std::string& turn_id);
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
 

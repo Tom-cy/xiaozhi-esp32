@@ -360,3 +360,34 @@ ai.device.voice.conversation-idle-timeout-seconds: 12
 ### 设计结论
 
 连续对话不是 realtime 全双工，也不是一直录音，而是多个 AutoStop turn 串成一个 conversation session。每一轮用户语音都必须有明确的 `listen start -> UDP audio -> listen stop` 边界。
+
+## 2026-07-12 conversation/turn 最终统一模型
+
+最终实现不再使用“`tts stop` 后固件自行判断是否继续”的隐式模型。Java 服务端是会话
+策略权威端，ESP32 按消息中的明确目标状态执行。
+
+```text
+唤醒
+  -> conversation_id + turn_id
+  -> listen start
+  -> UDP Opus 上行
+  -> listen stop
+  -> Java ASR / AI / TTS
+  -> tts start
+  <- ESP32 tts ready
+  -> UDP raw Opus（一帧一包，60ms pacing）
+  -> tts stop(next_state=listening, next_turn_id)
+  -> 下一轮 listen start
+
+12 秒无语音 / abort / 异常
+  -> end_session 或 tts stop(next_state=idle)
+  -> idle
+```
+
+最终保证：
+
+- 传输 `session_id`、连续对话 `conversation_id`、单轮 `turn_id` 三者职责分离。
+- 旧 MQTT 消息和旧 watchdog 不能改变新 turn 的状态。
+- TTS UDP 不会早于设备进入 speaking。
+- Ogg 容器不会再被当成原始 Opus 帧发送给 ESP32 解码器。
+- 任意失败路径都能回到 idle，不会长期停在红灯 listening/speaking。

@@ -525,6 +525,7 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            ClearConversation();
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -537,20 +538,50 @@ void Application::InitializeProtocol() {
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
-                Schedule([this]() {
+                auto conversation = cJSON_GetObjectItem(root, "conversation_id");
+                auto turn = cJSON_GetObjectItem(root, "turn_id");
+                std::string conversation_id = cJSON_IsString(conversation) ? conversation->valuestring : "";
+                std::string turn_id = cJSON_IsString(turn) ? turn->valuestring : "";
+                Schedule([this, conversation_id, turn_id]() {
+                    if (!MatchesConversationTurn(conversation_id, turn_id)) {
+                        ESP_LOGW(TAG, "Ignore stale tts start conversation=%s turn=%s",
+                            conversation_id.c_str(), turn_id.c_str());
+                        return;
+                    }
                     aborted_ = false;
-                    SetDeviceState(kDeviceStateSpeaking);
+                    if (SetDeviceState(kDeviceStateSpeaking)) {
+                        audio_service_.EnableVoiceProcessing(false);
+                        audio_service_.ResetDecoder();
+                        protocol_->SendTtsReady(conversation_id_, active_turn_id_);
+                    }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
-                Schedule([this]() {
-                    if (GetDeviceState() == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
-                            continuous_conversation_active_ = false;
-                            SetDeviceState(kDeviceStateIdle);
-                        } else {
-                            continuous_conversation_active_ = true;
-                            SetDeviceState(kDeviceStateListening);
-                        }
+                auto conversation = cJSON_GetObjectItem(root, "conversation_id");
+                auto turn = cJSON_GetObjectItem(root, "turn_id");
+                auto next_state = cJSON_GetObjectItem(root, "next_state");
+                auto next_turn = cJSON_GetObjectItem(root, "next_turn_id");
+                auto idle_timeout = cJSON_GetObjectItem(root, "idle_timeout");
+                std::string conversation_id = cJSON_IsString(conversation) ? conversation->valuestring : "";
+                std::string turn_id = cJSON_IsString(turn) ? turn->valuestring : "";
+                std::string target = cJSON_IsString(next_state) ? next_state->valuestring : "idle";
+                std::string next_turn_id = cJSON_IsString(next_turn) ? next_turn->valuestring : "";
+                int timeout_seconds = cJSON_IsNumber(idle_timeout) ? idle_timeout->valueint : 12;
+                Schedule([this, conversation_id, turn_id, target, next_turn_id, timeout_seconds]() {
+                    if (!MatchesConversationTurn(conversation_id, turn_id)) {
+                        ESP_LOGW(TAG, "Ignore stale tts stop conversation=%s turn=%s",
+                            conversation_id.c_str(), turn_id.c_str());
+                        return;
+                    }
+                    if (target == "listening") {
+                        continuous_conversation_active_ = true;
+                        continuous_idle_timeout_us_ = std::max<int64_t>(3000000,
+                            (int64_t)timeout_seconds * 1000000);
+                        active_turn_id_ = next_turn_id;
+                        EnsureActiveTurn();
+                        SetListeningMode(kListeningModeAutoStop);
+                    } else {
+                        ClearConversation();
+                        SetDeviceState(kDeviceStateIdle);
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
@@ -593,8 +624,20 @@ void Application::InitializeProtocol() {
                     });
                 } else if (strcmp(command->valuestring, "continue_listening") == 0) {
                     auto idle_timeout = cJSON_GetObjectItem(root, "idle_timeout");
+                    auto conversation = cJSON_GetObjectItem(root, "conversation_id");
+                    auto turn = cJSON_GetObjectItem(root, "turn_id");
                     int timeout_seconds = cJSON_IsNumber(idle_timeout) ? idle_timeout->valueint : 12;
-                    Schedule([this, timeout_seconds]() {
+                    std::string conversation_id = cJSON_IsString(conversation) ? conversation->valuestring : "";
+                    std::string next_turn_id = cJSON_IsString(turn) ? turn->valuestring : "";
+                    Schedule([this, timeout_seconds, conversation_id, next_turn_id]() {
+                        if (conversation_id_.empty()
+                                || (!conversation_id.empty() && conversation_id != conversation_id_)) {
+                            ESP_LOGW(TAG, "Ignore stale continue_listening conversation=%s",
+                                conversation_id.c_str());
+                            return;
+                        }
+                        active_turn_id_ = next_turn_id;
+                        EnsureActiveTurn();
                         continuous_conversation_active_ = true;
                         continuous_idle_timeout_us_ = std::max<int64_t>(3000000, (int64_t)timeout_seconds * 1000000);
                         auto state = GetDeviceState();
@@ -603,15 +646,31 @@ void Application::InitializeProtocol() {
                         }
                     });
                 } else if (strcmp(command->valuestring, "stop_listening") == 0) {
-                    Schedule([this]() {
+                    auto conversation = cJSON_GetObjectItem(root, "conversation_id");
+                    auto turn = cJSON_GetObjectItem(root, "turn_id");
+                    std::string conversation_id = cJSON_IsString(conversation) ? conversation->valuestring : "";
+                    std::string turn_id = cJSON_IsString(turn) ? turn->valuestring : "";
+                    Schedule([this, conversation_id, turn_id]() {
+                        if (!MatchesConversationTurn(conversation_id, turn_id)) {
+                            return;
+                        }
                         if (GetDeviceState() == kDeviceStateListening) {
-                            StopListening(kListeningStopReasonManual);
+                            StopListening(kListeningStopReasonServerWatchdog);
                         }
                     });
                 } else if (strcmp(command->valuestring, "end_session") == 0) {
-                    Schedule([this]() {
-                        continuous_conversation_active_ = false;
-                        if (GetDeviceState() == kDeviceStateListening) {
+                    auto conversation = cJSON_GetObjectItem(root, "conversation_id");
+                    std::string conversation_id = cJSON_IsString(conversation) ? conversation->valuestring : "";
+                    Schedule([this, conversation_id]() {
+                        if (!conversation_id.empty() && !conversation_id_.empty()
+                                && conversation_id != conversation_id_) {
+                            ESP_LOGW(TAG, "Ignore stale end_session conversation=%s", conversation_id.c_str());
+                            return;
+                        }
+                        ClearConversation();
+                        auto state = GetDeviceState();
+                        if (state == kDeviceStateListening || state == kDeviceStateSpeaking
+                                || state == kDeviceStateConnecting) {
                             SetDeviceState(kDeviceStateIdle);
                         }
                     });
@@ -733,6 +792,7 @@ void Application::HandleToggleChatEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        BeginConversation();
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -766,6 +826,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         }
     }
 
+    BeginConversation();
     SetListeningMode(mode);
 }
 
@@ -787,6 +848,7 @@ void Application::HandleStartListeningEvent() {
     }
     
     if (state == kDeviceStateIdle) {
+        BeginConversation();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
@@ -798,6 +860,8 @@ void Application::HandleStartListeningEvent() {
         SetListeningMode(kListeningModeManualStop);
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
+        ClearConversation();
+        BeginConversation();
         SetListeningMode(kListeningModeManualStop);
     }
 }
@@ -810,11 +874,16 @@ void Application::HandleStopListeningEvent() {
         SetDeviceState(kDeviceStateWifiConfiguring);
         return;
     } else if (state == kDeviceStateListening) {
+        auto stop_reason = pending_listening_stop_reason_;
         if (protocol_) {
-            protocol_->SendStopListening(ListeningStopReasonToString(pending_listening_stop_reason_));
+            protocol_->SendStopListening(ListeningStopReasonToString(stop_reason),
+                conversation_id_, active_turn_id_);
         }
         pending_listening_stop_reason_ = kListeningStopReasonManual;
         SetDeviceState(kDeviceStateIdle);
+        if (stop_reason == kListeningStopReasonNoSpeechTimeout) {
+            ClearConversation();
+        }
     }
 }
 
@@ -828,6 +897,7 @@ void Application::HandleWakeWordDetectedEvent() {
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
 
     if (state == kDeviceStateIdle) {
+        BeginConversation();
         audio_service_.EncodeWakeWord();
         auto wake_word = audio_service_.GetLastWakeWord();
 
@@ -844,11 +914,15 @@ void Application::HandleWakeWordDetectedEvent() {
         ContinueWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
+        ClearConversation();
+        BeginConversation();
         // Clear send queue to avoid sending residues to server
         while (audio_service_.PopPacketFromSendQueue());
 
         if (state == kDeviceStateListening) {
-            protocol_->SendStartListening(GetDefaultListeningMode());
+            protocol_->SendWakeWordDetected(wake_word, conversation_id_, active_turn_id_);
+            protocol_->SendStartListening(GetDefaultListeningMode(), conversation_id_, active_turn_id_);
+            ResetListeningSilenceTimer();
             audio_service_.ResetDecoder();
             audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
             // Re-enable wake word detection as it was stopped by the detection itself
@@ -881,14 +955,16 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
         }
     }
 
-    ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
+    BeginConversation();
+    ESP_LOGI(TAG, "Wake word detected: %s conversation=%s turn=%s", wake_word.c_str(),
+        conversation_id_.c_str(), active_turn_id_.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
     // Encode and send the wake word data to the server
     while (auto packet = audio_service_.PopWakeWordPacket()) {
         protocol_->SendAudio(std::move(packet));
     }
     // Set the chat state to wake word detected
-    protocol_->SendWakeWordDetected(wake_word);
+    protocol_->SendWakeWordDetected(wake_word, conversation_id_, active_turn_id_);
     SetListeningMode(GetDefaultListeningMode());
 #else
     // Set flag to play popup sound after state changes to listening
@@ -925,6 +1001,10 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
             ResetListeningSilenceTimer();
+            EnsureActiveTurn();
+
+            // Every listening state is a distinct turn, even if an idle state event was coalesced.
+            protocol_->SendStartListening(listening_mode_, conversation_id_, active_turn_id_);
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -934,8 +1014,6 @@ void Application::HandleStateChangedEvent() {
                     audio_service_.WaitForPlaybackQueueEmpty();
                 }
                 
-                // Send the start listening command
-                protocol_->SendStartListening(listening_mode_);
                 audio_service_.EnableVoiceProcessing(true);
             }
 
@@ -998,6 +1076,43 @@ ListeningMode Application::GetDefaultListeningMode() const {
     return kListeningModeAutoStop;
 }
 
+void Application::BeginConversation() {
+    if (!conversation_id_.empty()) {
+        EnsureActiveTurn();
+        return;
+    }
+    std::string transport_id = protocol_ ? protocol_->session_id() : "local";
+    conversation_id_ = transport_id + "-c" + std::to_string(++conversation_sequence_)
+        + "-" + std::to_string(esp_timer_get_time());
+    turn_sequence_ = 0;
+    continuous_conversation_active_ = false;
+    EnsureActiveTurn();
+}
+
+void Application::EnsureActiveTurn() {
+    if (conversation_id_.empty()) {
+        return;
+    }
+    if (active_turn_id_.empty()) {
+        active_turn_id_ = conversation_id_ + "-t" + std::to_string(++turn_sequence_);
+    }
+}
+
+void Application::ClearConversation() {
+    continuous_conversation_active_ = false;
+    conversation_id_.clear();
+    active_turn_id_.clear();
+    turn_sequence_ = 0;
+}
+
+bool Application::MatchesConversationTurn(const std::string& conversation_id,
+                                          const std::string& turn_id) const {
+    if (!conversation_id.empty() && conversation_id != conversation_id_) {
+        return false;
+    }
+    return turn_id.empty() || turn_id == active_turn_id_;
+}
+
 void Application::ResetListeningSilenceTimer() {
     int64_t now = esp_timer_get_time();
     listening_started_at_us_ = now;
@@ -1053,6 +1168,8 @@ const char* Application::ListeningStopReasonToString(ListeningStopReason reason)
             return "no_speech_timeout";
         case kListeningStopReasonMaxDuration:
             return "max_listening_timeout";
+        case kListeningStopReasonServerWatchdog:
+            return "server_watchdog";
         case kListeningStopReasonManual:
         default:
             return "manual";

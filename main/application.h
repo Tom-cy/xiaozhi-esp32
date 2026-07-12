@@ -45,6 +45,7 @@ enum ListeningStopReason {
     kListeningStopReasonVadSilence,
     kListeningStopReasonNoSpeechTimeout,
     kListeningStopReasonMaxDuration,
+    kListeningStopReasonServerWatchdog,
 };
 
 class Application {
@@ -158,6 +159,10 @@ private:
     int64_t continuous_idle_timeout_us_ = 12000000;
     bool listening_had_voice_ = false;
     bool continuous_conversation_active_ = false;
+    std::string conversation_id_;
+    std::string active_turn_id_;
+    uint32_t conversation_sequence_ = 0;
+    uint32_t turn_sequence_ = 0;
     ListeningStopReason pending_listening_stop_reason_ = kListeningStopReasonManual;
 
 
@@ -186,6 +191,10 @@ private:
     void ResetListeningSilenceTimer();
     void MaybeAutoStopListening(const char* source);
     const char* ListeningStopReasonToString(ListeningStopReason reason) const;
+    void BeginConversation();
+    void EnsureActiveTurn();
+    void ClearConversation();
+    bool MatchesConversationTurn(const std::string& conversation_id, const std::string& turn_id) const;
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

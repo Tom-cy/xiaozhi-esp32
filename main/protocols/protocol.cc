@@ -48,15 +48,32 @@ void Protocol::SendAbortSpeaking(AbortReason reason) {
     SendText(message);
 }
 
-void Protocol::SendWakeWordDetected(const std::string& wake_word) {
+void Protocol::SendWakeWordDetected(const std::string& wake_word,
+                                    const std::string& conversation_id,
+                                    const std::string& turn_id) {
     std::string json = "{\"session_id\":\"" + session_id_ + 
-                      "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"}";
+                      "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"";
+    if (!conversation_id.empty()) {
+        json += ",\"conversation_id\":\"" + conversation_id + "\"";
+    }
+    if (!turn_id.empty()) {
+        json += ",\"turn_id\":\"" + turn_id + "\"";
+    }
+    json += "}";
     SendText(json);
 }
 
-void Protocol::SendStartListening(ListeningMode mode) {
+void Protocol::SendStartListening(ListeningMode mode,
+                                  const std::string& conversation_id,
+                                  const std::string& turn_id) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\"";
     message += ",\"type\":\"listen\",\"state\":\"start\"";
+    if (!conversation_id.empty()) {
+        message += ",\"conversation_id\":\"" + conversation_id + "\"";
+    }
+    if (!turn_id.empty()) {
+        message += ",\"turn_id\":\"" + turn_id + "\"";
+    }
     if (mode == kListeningModeRealtime) {
         message += ",\"mode\":\"realtime\"";
     } else if (mode == kListeningModeAutoStop) {
@@ -68,12 +85,27 @@ void Protocol::SendStartListening(ListeningMode mode) {
     SendText(message);
 }
 
-void Protocol::SendStopListening(const std::string& reason) {
+void Protocol::SendStopListening(const std::string& reason,
+                                 const std::string& conversation_id,
+                                 const std::string& turn_id) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"";
+    if (!conversation_id.empty()) {
+        message += ",\"conversation_id\":\"" + conversation_id + "\"";
+    }
+    if (!turn_id.empty()) {
+        message += ",\"turn_id\":\"" + turn_id + "\"";
+    }
     if (!reason.empty()) {
         message += ",\"reason\":\"" + reason + "\"";
     }
     message += "}";
+    SendText(message);
+}
+
+void Protocol::SendTtsReady(const std::string& conversation_id, const std::string& turn_id) {
+    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"tts\",\"state\":\"ready\"";
+    message += ",\"conversation_id\":\"" + conversation_id + "\"";
+    message += ",\"turn_id\":\"" + turn_id + "\"}";
     SendText(message);
 }
 

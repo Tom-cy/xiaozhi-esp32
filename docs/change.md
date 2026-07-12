@@ -914,3 +914,44 @@ TTS stop -> continue_listening -> 下一轮 listening
    - `end_session`：结束整场连续会话，设备回到 idle。
 
 **设计结论**：连续对话不是“永远录音”，而是“多个 AutoStop turn 串成一个 conversation session”。这样既保留连续体验，又避免红灯一直停在聆听中的问题。
+
+## 2026-07-12 修复 13：统一 conversation/turn 状态机与 TTS 握手
+
+上一版仍由固件在收到任意 `tts stop` 后自行进入 listening，同时 Java 另外发送
+`continue_listening`。两个异步 MQTT 消息之间存在竞态，而且旧 watchdog 只按
+`deviceId/sessionId` 判断，可能误结束新一轮录音。
+
+本次最终统一为：
+
+```text
+session_id      = MQTT/UDP 传输会话
+conversation_id = 一次连续对话
+turn_id         = 连续对话中的单轮语音
+```
+
+固件修改：
+
+1. `listen detect/start/stop` 携带 `conversation_id` 和 `turn_id`。
+2. 每次进入 listening 都创建或使用明确的 turn，并必定发送一次 `listen start`。
+3. `tts start` 校验 conversation/turn，切换 speaking 后回复 `tts ready`。
+4. `tts stop` 使用 `next_state` 和 `next_turn_id` 决定进入下一轮或回到 idle。
+5. 延迟到达且 conversation/turn 不匹配的控制消息会被忽略。
+6. `end_session` 可从 listening、speaking、connecting 统一回到 idle。
+7. 新增 `server_watchdog` stop reason，服务端兜底停止不会被误认为用户手动结束。
+
+Java 配套修改：
+
+1. 使用显式 `ConversationContext` 和 `VoiceTurn`，不再用 Redis 对话缓存判断连续状态。
+2. watchdog 绑定 `VoiceTurn` 对象并在结束时取消，避免跨 turn 误触发。
+3. TTS 开始后等待设备 `tts ready`，再发送 UDP 音频。
+4. Ogg Opus 经 `OggOpusDemuxer` 拆成原始 Opus packet，一包一帧并按 60ms 节奏发送。
+5. 正常、超时、abort、ASR/TTS 异常路径均明确下发 `next_state=idle/listening`。
+
+影响文件：
+
+| 文件 | 说明 |
+|------|------|
+| `main/application.h/.cc` | conversation/turn 字段、状态校验、next_state 执行 |
+| `main/protocols/protocol.h/.cc` | 上行 conversation/turn 字段和 `tts ready` |
+| `CloudV3/.../XiaozhiVoiceRuntime.java` | 显式会话状态机、turn watchdog、TTS 顺序控制 |
+| `CloudV3/.../OggOpusDemuxer.java` | Ogg Opus 解复用为 UDP 原始 Opus 帧 |
