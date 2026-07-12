@@ -955,3 +955,27 @@ Java 配套修改：
 | `main/protocols/protocol.h/.cc` | 上行 conversation/turn 字段和 `tts ready` |
 | `CloudV3/.../XiaozhiVoiceRuntime.java` | 显式会话状态机、turn watchdog、TTS 顺序控制 |
 | `CloudV3/.../OggOpusDemuxer.java` | Ogg Opus 解复用为 UDP 原始 Opus 帧 |
+
+## 2026-07-12 修复 14：TTS ready 时序与 speaking 兜底
+
+问题现象：
+
+```text
+Java 已生成 AI 回复并完成 TTS 合成
+ESP32 已进入 speaking
+设备没有播放声音，红灯/说话状态长期不退出
+```
+
+根因：
+
+`tts start` 回调里过早发送 `tts ready`，Java 收到 ready 后开始 UDP 下发音频；但 ESP32 主循环随后处理
+`kDeviceStateSpeaking` 状态事件时还会再次 `ResetDecoder()`，可能把首批已经进入解码队列的 UDP Opus 包清掉。
+
+修复：
+
+1. `tts start` 中先关闭语音采集、清空解码器、重置 speaking 计时，再进入 `speaking`。
+2. 只有在设备确认进入 `speaking` 后才发送 `tts ready`。
+3. `kDeviceStateSpeaking` 状态事件不再二次 `ResetDecoder()`。
+4. 收到 UDP TTS 音频包时记录 `last_tts_audio_at_us_` 和 `tts_audio_received_`。
+5. 新增 speaking 兜底：8 秒未收到首个 TTS UDP 包自动回 idle；已收到 TTS 包但播放空闲且 3 秒无后续包也自动回 idle。
+6. Java 侧新增 TTS 全链路 INFO 日志，用于定位卡在合成、转码、ready 等待还是 UDP 下发。

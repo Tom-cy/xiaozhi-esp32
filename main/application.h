@@ -156,8 +156,11 @@ private:
     TaskHandle_t activation_task_handle_ = nullptr;
     int64_t listening_started_at_us_ = 0;
     int64_t last_voice_activity_at_us_ = 0;
+    int64_t speaking_started_at_us_ = 0;
+    int64_t last_tts_audio_at_us_ = 0;
     int64_t continuous_idle_timeout_us_ = 12000000;
     bool listening_had_voice_ = false;
+    bool tts_audio_received_ = false;
     bool continuous_conversation_active_ = false;
     std::string conversation_id_;
     std::string active_turn_id_;
@@ -190,6 +193,8 @@ private:
     ListeningMode GetDefaultListeningMode() const;
     void ResetListeningSilenceTimer();
     void MaybeAutoStopListening(const char* source);
+    void ResetSpeakingTimer();
+    void MaybeAutoStopSpeaking(const char* source);
     const char* ListeningStopReasonToString(ListeningStopReason reason) const;
     void BeginConversation();
     void EnsureActiveTurn();

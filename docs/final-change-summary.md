@@ -391,3 +391,13 @@ ai.device.voice.conversation-idle-timeout-seconds: 12
 - TTS UDP 不会早于设备进入 speaking。
 - Ogg 容器不会再被当成原始 Opus 帧发送给 ESP32 解码器。
 - 任意失败路径都能回到 idle，不会长期停在红灯 listening/speaking。
+
+## 2026-07-12 TTS ready 最终约束
+
+`tts ready` 不是普通 MQTT ACK，而是设备侧播放通道已稳定的准备信号。ESP32 必须先停止采集、清空解码器、确认进入 `speaking`，再回复 `tts ready`；Java 只有收到 ready 后才能下发 UDP TTS。speaking 状态事件不能再次 `ResetDecoder()`，否则会清掉已经到达的 UDP 首包。
+
+最终兜底：
+
+- Java 记录 TTS 合成、转码、拆包、ready、UDP 发送全过程 INFO 日志。
+- ESP32 8 秒收不到首个 TTS UDP 包自动回 idle。
+- ESP32 已收到 TTS 包但播放空闲且缺少 `tts stop` 时自动回 idle。

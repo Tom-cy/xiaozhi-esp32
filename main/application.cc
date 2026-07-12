@@ -24,6 +24,8 @@ namespace {
 constexpr int64_t kNoSpeechTimeoutUs = 5000000;
 constexpr int64_t kPostVoiceSilenceTimeoutUs = 1200000;
 constexpr int64_t kMaxListeningDurationUs = 15000000;
+constexpr int64_t kTtsFirstPacketTimeoutUs = 8000000;
+constexpr int64_t kTtsPlaybackIdleTimeoutUs = 3000000;
 }
 
 Application::Application() {
@@ -267,6 +269,7 @@ void Application::Run() {
                 SystemInfo::PrintHeapStats();
             }
             MaybeAutoStopListening("tick");
+            MaybeAutoStopSpeaking("tick");
         }
     }
 }
@@ -510,7 +513,11 @@ void Application::InitializeProtocol() {
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         if (GetDeviceState() == kDeviceStateSpeaking) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            tts_audio_received_ = true;
+            last_tts_audio_at_us_ = esp_timer_get_time();
+            if (!audio_service_.PushPacketToDecodeQueue(std::move(packet))) {
+                ESP_LOGW(TAG, "TTS decode queue full, drop incoming audio packet");
+            }
         }
     });
     
@@ -549,9 +556,10 @@ void Application::InitializeProtocol() {
                         return;
                     }
                     aborted_ = false;
-                    if (SetDeviceState(kDeviceStateSpeaking)) {
-                        audio_service_.EnableVoiceProcessing(false);
-                        audio_service_.ResetDecoder();
+                    ResetSpeakingTimer();
+                    audio_service_.EnableVoiceProcessing(false);
+                    audio_service_.ResetDecoder();
+                    if (SetDeviceState(kDeviceStateSpeaking) || GetDeviceState() == kDeviceStateSpeaking) {
                         protocol_->SendTtsReady(conversation_id_, active_turn_id_);
                     }
                 });
@@ -1039,7 +1047,6 @@ void Application::HandleStateChangedEvent() {
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
-            audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1119,6 +1126,35 @@ void Application::ResetListeningSilenceTimer() {
     last_voice_activity_at_us_ = now;
     listening_had_voice_ = audio_service_.IsVoiceDetected();
     pending_listening_stop_reason_ = kListeningStopReasonManual;
+}
+
+void Application::ResetSpeakingTimer() {
+    speaking_started_at_us_ = esp_timer_get_time();
+    last_tts_audio_at_us_ = 0;
+    tts_audio_received_ = false;
+}
+
+void Application::MaybeAutoStopSpeaking(const char* source) {
+    if (GetDeviceState() != kDeviceStateSpeaking) {
+        return;
+    }
+
+    int64_t now = esp_timer_get_time();
+    if (!tts_audio_received_) {
+        if (speaking_started_at_us_ > 0 && now - speaking_started_at_us_ >= kTtsFirstPacketTimeoutUs) {
+            ESP_LOGW(TAG, "TTS first packet timeout from %s, return to idle", source);
+            ClearConversation();
+            SetDeviceState(kDeviceStateIdle);
+        }
+        return;
+    }
+
+    if (last_tts_audio_at_us_ > 0 && now - last_tts_audio_at_us_ >= kTtsPlaybackIdleTimeoutUs
+            && audio_service_.IsIdle()) {
+        ESP_LOGW(TAG, "TTS stop missing from %s, return to idle", source);
+        ClearConversation();
+        SetDeviceState(kDeviceStateIdle);
+    }
 }
 
 void Application::MaybeAutoStopListening(const char* source) {
