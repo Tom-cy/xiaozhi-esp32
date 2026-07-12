@@ -68,8 +68,12 @@ void Protocol::SendStartListening(ListeningMode mode) {
     SendText(message);
 }
 
-void Protocol::SendStopListening() {
-    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"}";
+void Protocol::SendStopListening(const std::string& reason) {
+    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"";
+    if (!reason.empty()) {
+        message += ",\"reason\":\"" + reason + "\"";
+    }
+    message += "}";
     SendText(message);
 }
 

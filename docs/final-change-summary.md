@@ -117,6 +117,13 @@
 
 ### `main/application.cc`
 
+2026-07-12 补充最终状态：
+- 新增 listening turn 状态机，避免设备在 MQTT/UDP 通道已经建立后一直红灯停留在聆听中。
+- 当 `kListeningModeAutoStop` 下没有检测到过人声时，进入 listening 后 5 秒自动 `StopListening(no_speech_timeout)`。
+- 当已经检测到过人声时，最后一次人声后静音 1.2 秒自动 `StopListening(vad_silence)`。
+- listening 超过 15 秒会自动 `StopListening(max_listening_timeout)`。
+- `listen stop` 会携带 `reason` 字段，便于 Java 日志和后续问题定位。
+
 最终职责：应用主状态机、唤醒词、聆听、说话和音频通道编排。
 
 主要修改：
@@ -199,6 +206,11 @@
 - 补充 `subscribe_topic` 配置项，说明其用于接收服务端下行消息。
 
 ### `docs/change.md`
+
+2026-07-12 补充最终状态：
+- 新增“修复 10：listening 静音兜底超时，修复红灯一直聆听中”。
+- 新增“修复 11：升级为 listening turn 状态机并让 `listen stop` 携带 reason”。
+- 记录本次 Java 已收到 `listen detect/start` 但 ESP32 没有发送 `listen stop` 的排查结论、WebSocket/MQTT 架构差异和双保险修复方案。
 
 最终职责：按时间记录完整变更历史和排查过程。
 

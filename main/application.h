@@ -40,6 +40,13 @@ enum AecMode {
     kAecOnServerSide,
 };
 
+enum ListeningStopReason {
+    kListeningStopReasonManual,
+    kListeningStopReasonVadSilence,
+    kListeningStopReasonNoSpeechTimeout,
+    kListeningStopReasonMaxDuration,
+};
+
 class Application {
 public:
     static Application& GetInstance() {
@@ -102,7 +109,7 @@ public:
      * Stop listening (event-based, thread-safe)
      * Sends MAIN_EVENT_STOP_LISTENING to be handled in Run()
      */
-    void StopListening();
+    void StopListening(ListeningStopReason reason = kListeningStopReasonManual);
 
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
@@ -146,6 +153,10 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
+    int64_t listening_started_at_us_ = 0;
+    int64_t last_voice_activity_at_us_ = 0;
+    bool listening_had_voice_ = false;
+    ListeningStopReason pending_listening_stop_reason_ = kListeningStopReasonManual;
 
 
     // Event handlers
@@ -170,6 +181,9 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
+    void ResetListeningSilenceTimer();
+    void MaybeAutoStopListening(const char* source);
+    const char* ListeningStopReasonToString(ListeningStopReason reason) const;
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

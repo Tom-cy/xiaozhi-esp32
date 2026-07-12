@@ -19,6 +19,11 @@
 
 #define TAG "Application"
 
+namespace {
+constexpr int64_t kNoSpeechTimeoutUs = 5000000;
+constexpr int64_t kPostVoiceSilenceTimeoutUs = 1200000;
+constexpr int64_t kMaxListeningDurationUs = 15000000;
+}
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -233,9 +238,11 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
-                if (listening_mode_ == kListeningModeAutoStop && !audio_service_.IsVoiceDetected()) {
-                    ESP_LOGI(TAG, "VAD silence detected, auto stop listening");
-                    StopListening();
+                if (audio_service_.IsVoiceDetected()) {
+                    listening_had_voice_ = true;
+                    last_voice_activity_at_us_ = esp_timer_get_time();
+                } else {
+                    MaybeAutoStopListening("vad");
                 }
             }
         }
@@ -258,6 +265,7 @@ void Application::Run() {
             if (clock_ticks_ % 10 == 0) {
                 SystemInfo::PrintHeapStats();
             }
+            MaybeAutoStopListening("tick");
         }
     }
 }
@@ -671,7 +679,8 @@ void Application::StartListening() {
     xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING);
 }
 
-void Application::StopListening() {
+void Application::StopListening(ListeningStopReason reason) {
+    pending_listening_stop_reason_ = reason;
     xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING);
 }
 
@@ -775,8 +784,9 @@ void Application::HandleStopListeningEvent() {
         return;
     } else if (state == kDeviceStateListening) {
         if (protocol_) {
-            protocol_->SendStopListening();
+            protocol_->SendStopListening(ListeningStopReasonToString(pending_listening_stop_reason_));
         }
+        pending_listening_stop_reason_ = kListeningStopReasonManual;
         SetDeviceState(kDeviceStateIdle);
     }
 }
@@ -887,6 +897,7 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            ResetListeningSilenceTimer();
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -958,6 +969,57 @@ void Application::SetListeningMode(ListeningMode mode) {
 
 ListeningMode Application::GetDefaultListeningMode() const {
     return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+}
+
+void Application::ResetListeningSilenceTimer() {
+    int64_t now = esp_timer_get_time();
+    listening_started_at_us_ = now;
+    last_voice_activity_at_us_ = now;
+    listening_had_voice_ = audio_service_.IsVoiceDetected();
+    pending_listening_stop_reason_ = kListeningStopReasonManual;
+}
+
+void Application::MaybeAutoStopListening(const char* source) {
+    if (GetDeviceState() != kDeviceStateListening || listening_mode_ != kListeningModeAutoStop) {
+        return;
+    }
+
+    int64_t now = esp_timer_get_time();
+    if (audio_service_.IsVoiceDetected()) {
+        listening_had_voice_ = true;
+        last_voice_activity_at_us_ = now;
+        return;
+    }
+
+    if (listening_started_at_us_ > 0 && now - listening_started_at_us_ >= kMaxListeningDurationUs) {
+        ESP_LOGI(TAG, "Listening max duration timeout from %s, auto stop listening", source);
+        StopListening(kListeningStopReasonMaxDuration);
+        return;
+    }
+
+    if (listening_had_voice_) {
+        if (last_voice_activity_at_us_ > 0 && now - last_voice_activity_at_us_ >= kPostVoiceSilenceTimeoutUs) {
+            ESP_LOGI(TAG, "Listening VAD silence timeout from %s, auto stop listening", source);
+            StopListening(kListeningStopReasonVadSilence);
+        }
+    } else if (listening_started_at_us_ > 0 && now - listening_started_at_us_ >= kNoSpeechTimeoutUs) {
+        ESP_LOGI(TAG, "Listening no speech timeout from %s, auto stop listening", source);
+        StopListening(kListeningStopReasonNoSpeechTimeout);
+    }
+}
+
+const char* Application::ListeningStopReasonToString(ListeningStopReason reason) const {
+    switch (reason) {
+        case kListeningStopReasonVadSilence:
+            return "vad_silence";
+        case kListeningStopReasonNoSpeechTimeout:
+            return "no_speech_timeout";
+        case kListeningStopReasonMaxDuration:
+            return "max_listening_timeout";
+        case kListeningStopReasonManual:
+        default:
+            return "manual";
+    }
 }
 
 void Application::Reboot() {

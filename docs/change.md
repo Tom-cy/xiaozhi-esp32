@@ -754,3 +754,133 @@ Java 端：
 ```
 
 **影响文件**：`main/application.cc`
+
+---
+
+### 修复 10：`application.cc` - listening 静音兜底超时，修复红灯一直聆听中（2026-07-12）
+
+**现象**：新固件已能正常完成 OTA、MQTT 连接、订阅下行 topic，并能收到 Java 下发的 hello reply。日志中已经出现：
+
+```text
+MQTT: Subscribed topic: devices/p2p/D8_85_AC_A2_27_F4
+MQTT: Session ID: 55b4524f-39c3-46b6-a51e-dad5a2e39691
+StateMachine: State: connecting -> listening
+```
+
+Java 侧也已经收到 `hello`、下发 `hello reply`，并收到 `listen detect` / `listen start`。但是设备随后一直停留在红灯聆听状态，没有发送 `listen stop`，Java 因此无法进入 ASR / AI / TTS。
+
+**原因**：上一版 auto-stop 只挂在 `MAIN_EVENT_VAD_CHANGE` 上。AFE 的 VAD 回调只有在状态发生变化时才会触发，典型路径是：
+
+```text
+VAD_SILENCE -> VAD_SPEECH -> VAD_SILENCE
+```
+
+如果唤醒后用户没有继续说话，或者 AFE 一直保持 `VAD_SILENCE`，就不会产生 “从 speech 回到 silence” 的事件，因此 `MAIN_EVENT_VAD_CHANGE` 不会触发 `StopListening()`，设备会一直停留在 `kDeviceStateListening`。
+
+**修复内容**：
+
+1. 在 `Application` 中新增 listening 静音计时状态：
+
+```cpp
+int64_t listening_started_at_us_ = 0;
+int64_t last_voice_activity_at_us_ = 0;
+bool listening_had_voice_ = false;
+```
+
+2. 新增 `ResetListeningSilenceTimer()`，进入 `kDeviceStateListening` 时重置计时。
+
+3. 新增 `MaybeAutoStopListening()`，同时由 VAD 事件和每秒 clock tick 调用：
+
+```text
+没有检测到过人声：进入 listening 后静音 3 秒自动 StopListening()
+已经检测到过人声：最后一次人声后静音 1 秒自动 StopListening()
+```
+
+4. 保留 VAD 事件路径，同时增加 tick 兜底路径。这样即使 VAD 没有发生状态变化，也能自动发送 MQTT `listen stop`。
+
+**修复后预期日志**：
+
+设备端：
+
+```text
+StateMachine: State: connecting -> listening
+Application: Listening silence timeout from tick, auto stop listening
+StateMachine: State: listening -> idle
+```
+
+Java 端：
+
+```text
+[XiaozhiMQTT] inbound type=listen state=start
+[XiaozhiMQTT] inbound type=listen state=stop
+[XiaozhiVoice] ... ASR / AI / TTS ...
+```
+
+**影响文件**：
+
+| 文件 | 说明 |
+|------|------|
+| `main/application.h` | 新增 listening 静音计时字段和辅助方法声明 |
+| `main/application.cc` | 新增 VAD + tick 双路径 auto-stop 逻辑 |
+
+---
+
+### 修复 11：升级为 listening turn 状态机并让 `listen stop` 携带 reason（2026-07-12）
+
+**背景**：WebSocket 模式是一条设备到服务端的全双工连接，服务端持有 socket 后可以直接把下行消息写回同一条连接，因此不需要 `publish_topic` / `subscribe_topic`。MQTT 模式是 Broker 路由模型，ESP32 和 Java 是两个独立 MQTT client，所以上下行必须显式拆成：
+
+```text
+ESP32 publish   -> device-server/{deviceKey}
+Java subscribe  -> device-server/#
+Java publish    -> devices/p2p/{deviceKey}
+ESP32 subscribe -> devices/p2p/{deviceKey}
+```
+
+在这个模型下，`listen stop` 是控制面里非常关键的 turn 边界；Java 收到它后才会开始 ASR / AI / TTS。因此设备侧不能只靠单个 VAD change 事件，而要维护更完整的 listening turn 状态。
+
+**修复内容**：
+
+1. 新增 `ListeningStopReason`：
+
+```cpp
+enum ListeningStopReason {
+    kListeningStopReasonManual,
+    kListeningStopReasonVadSilence,
+    kListeningStopReasonNoSpeechTimeout,
+    kListeningStopReasonMaxDuration,
+};
+```
+
+2. `StopListening()` 支持传入 stop reason，并在真正发送 `listen stop` 时写入 JSON：
+
+```json
+{"type":"listen","state":"stop","reason":"vad_silence"}
+```
+
+3. listening 状态机策略升级为：
+
+```text
+no_speech_timeout: 进入 listening 后 5 秒没有检测到人声，自动 stop
+vad_silence: 检测到过人声后，最后一次人声后静音 1.2 秒自动 stop
+max_listening_timeout: listening 超过 15 秒自动 stop
+manual: 用户或系统主动停止
+```
+
+4. Java 侧同步新增 watchdog：
+
+```text
+listen-no-audio-timeout-seconds = 5
+listen-stop-timeout-seconds = 15
+```
+
+如果设备没有发送 `listen stop`，Java 会在服务端侧清理空 turn，或在已有 UDP 音频时强制 `finish()`，避免服务端资源永久挂住。
+
+**影响文件**：
+
+| 文件 | 说明 |
+|------|------|
+| `main/application.h` | 新增 `ListeningStopReason` 和 pending reason |
+| `main/application.cc` | listening turn 状态机升级，区分 no speech / VAD silence / max duration |
+| `main/protocols/protocol.h` | `SendStopListening()` 支持 reason 参数 |
+| `main/protocols/protocol.cc` | `listen stop` JSON 新增可选 `reason` 字段 |
+| `CloudV3/modules/ai/.../XiaozhiVoiceRuntime.java` | Java 侧新增 listen watchdog |
