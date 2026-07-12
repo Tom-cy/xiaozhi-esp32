@@ -115,6 +115,17 @@
 
 这项修改是 Java + EMQX 标准 Broker 模式下接收 hello reply 的关键条件。
 
+### `main/application.cc`
+
+最终职责：应用主状态机、唤醒词、聆听、说话和音频通道编排。
+
+主要修改：
+
+- BLE 配网流程中配合 `wifi_board.cc` 进入网络激活和协议初始化。
+- MQTT/UDP 模式下，唤醒词触发后打开音频通道并进入 `listening`。
+- 修复 VAD 静音后没有自动停止聆听的问题：在 `kListeningModeAutoStop` 且 `IsVoiceDetected() == false` 时触发 `StopListening()`。
+- 修复后设备会在用户说完话后发送 MQTT `listen stop`，Java 网关才能开始 ASR / AI / TTS。
+
 ### `main/boards/bread-compact-esp32/esp32_bread_board.cc`
 
 最终职责：面包板 ESP32 版本板级配置。

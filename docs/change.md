@@ -693,3 +693,64 @@ clientid=esp32_D8_85_AC_A2_27_F4 topic=devices/p2p/D8_85_AC_A2_27_F4
 | `main/protocols/mqtt_protocol.cc` | 读取 `subscribe_topic`，连接 MQTT 后订阅服务端下行 topic |
 | `docs/mqtt-udp.md` | 英文文档补充 `subscribe_topic` 配置说明 |
 | `docs/mqtt-udp_zh.md` | 中文文档补充 `subscribe_topic` 配置说明 |
+
+---
+
+### 修复 9：`application.cc` — VAD 静音后未自动停止聆听导致无法进入 AI 对话（2026-07-11）
+
+**现象**：设备唤醒词“小鹿小鹿”识别成功，MQTT hello reply 已正常收到，日志出现：
+
+```text
+MQTT: Session ID: b6915776-49cf-4fcc-9aa3-0c2062aa09d4
+StateMachine: State: connecting -> listening
+AFE: AFE Pipeline: [input] -> |VAD(WebRTC)| -> [output]
+AfeAudioProcessor: Audio communication task started
+```
+
+但设备一直停留在“聆听中”，Java 侧没有进入 ASR / AI / TTS 流程。
+
+**根因**：当前 Java 语音运行时只有收到 MQTT `listen stop` / `listen end` 后才会调用 `finish()`，进而执行 ASR、AI 回复和 TTS。固件在进入 `kListeningModeAutoStop` 后虽然启动了 AFE/VAD，但 `MAIN_EVENT_VAD_CHANGE` 事件分支只刷新 LED，没有在 VAD 从说话变为静音时触发 `StopListening()`。
+
+因此流程卡在：
+
+```text
+ESP32 listen start -> Java 创建语音轮次 -> ESP32 一直 listening -> 没有 listen stop -> Java 不开始 ASR
+```
+
+**修复内容**（`main/application.cc`）：
+
+在 `MAIN_EVENT_VAD_CHANGE` 分支中补齐 auto-stop 行为：
+
+```cpp
+if (bits & MAIN_EVENT_VAD_CHANGE) {
+    if (GetDeviceState() == kDeviceStateListening) {
+        auto led = Board::GetInstance().GetLed();
+        led->OnStateChanged();
+        if (listening_mode_ == kListeningModeAutoStop && !audio_service_.IsVoiceDetected()) {
+            ESP_LOGI(TAG, "VAD silence detected, auto stop listening");
+            StopListening();
+        }
+    }
+}
+```
+
+**修复后预期日志**：
+
+设备端：
+
+```text
+StateMachine: State: connecting -> listening
+Application: VAD silence detected, auto stop listening
+StateMachine: State: listening -> idle
+```
+
+Java 端：
+
+```text
+[XiaozhiMQTT] inbound type=listen state=start
+[XiaozhiUDP] learned remote deviceId=...
+[XiaozhiMQTT] inbound type=listen state=stop
+[XiaozhiVoice] ... ASR / AI / TTS ...
+```
+
+**影响文件**：`main/application.cc`

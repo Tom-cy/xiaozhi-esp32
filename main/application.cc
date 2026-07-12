@@ -233,6 +233,10 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
+                if (listening_mode_ == kListeningModeAutoStop && !audio_service_.IsVoiceDetected()) {
+                    ESP_LOGI(TAG, "VAD silence detected, auto stop listening");
+                    StopListening();
+                }
             }
         }
 
