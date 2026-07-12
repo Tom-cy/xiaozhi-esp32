@@ -979,3 +979,19 @@ ESP32 已进入 speaking
 4. 收到 UDP TTS 音频包时记录 `last_tts_audio_at_us_` 和 `tts_audio_received_`。
 5. 新增 speaking 兜底：8 秒未收到首个 TTS UDP 包自动回 idle；已收到 TTS 包但播放空闲且 3 秒无后续包也自动回 idle。
 6. Java 侧新增 TTS 全链路 INFO 日志，用于定位卡在合成、转码、ready 等待还是 UDP 下发。
+
+## 2026-07-12 修复 15：VAD 卡高时的麦克风硬超时
+
+问题现象：第一次对话完成后再次唤醒，设备长期停在 `listening`，并持续向 Java 发送 UDP Opus。
+
+根因：`MaybeAutoStopListening()` 原来先处理 `IsVoiceDetected()`。当环境噪声、回声或 VAD 残留导致检测结果持续为 true 时，
+函数提前返回，后面的 `kMaxListeningDurationUs` 检查永远无法执行。
+
+修复：
+
+1. 将最大聆听时长检查移动到 VAD 判断之前，定义为不可绕过的硬安全边界。
+2. 超过最大时长时发送 `listen stop(reason=max_duration)`。
+3. 日志记录触发来源、当前 VAD 和 `listening_had_voice`，便于区分真实长语音与 VAD 卡高。
+4. 状态进入 idle 后由既有状态机关闭 voice processing、恢复唤醒词检测，停止麦克风 UDP 上行。
+
+该修复保证任何 VAD 状态下单轮麦克风采集都有确定上限，避免异常设备持续占用 Java UDP、日志、内存和 ASR 资源。

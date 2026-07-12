@@ -1163,15 +1163,18 @@ void Application::MaybeAutoStopListening(const char* source) {
     }
 
     int64_t now = esp_timer_get_time();
-    if (audio_service_.IsVoiceDetected()) {
-        listening_had_voice_ = true;
-        last_voice_activity_at_us_ = now;
+    // The maximum listening duration is a hard safety boundary. Check it before
+    // VAD so a noisy or stuck detector cannot keep the microphone streaming forever.
+    if (listening_started_at_us_ > 0 && now - listening_started_at_us_ >= kMaxListeningDurationUs) {
+        ESP_LOGW(TAG, "Listening hard timeout from %s, force stop (vad=%d had_voice=%d)",
+            source, audio_service_.IsVoiceDetected(), listening_had_voice_);
+        StopListening(kListeningStopReasonMaxDuration);
         return;
     }
 
-    if (listening_started_at_us_ > 0 && now - listening_started_at_us_ >= kMaxListeningDurationUs) {
-        ESP_LOGI(TAG, "Listening max duration timeout from %s, auto stop listening", source);
-        StopListening(kListeningStopReasonMaxDuration);
+    if (audio_service_.IsVoiceDetected()) {
+        listening_had_voice_ = true;
+        last_voice_activity_at_us_ = now;
         return;
     }
 

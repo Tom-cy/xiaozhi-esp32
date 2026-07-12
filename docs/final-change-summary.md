@@ -401,3 +401,20 @@ ai.device.voice.conversation-idle-timeout-seconds: 12
 - Java 记录 TTS 合成、转码、拆包、ready、UDP 发送全过程 INFO 日志。
 - ESP32 8 秒收不到首个 TTS UDP 包自动回 idle。
 - ESP32 已收到 TTS 包但播放空闲且缺少 `tts stop` 时自动回 idle。
+
+## 2026-07-12 麦克风并发安全最终约束
+
+ESP32 的最大聆听时长是优先于 VAD 的硬边界。即使 `IsVoiceDetected()` 因噪声或算法状态持续为 true，
+设备也必须在 `kMaxListeningDurationUs` 到期后发送 `listen stop(reason=max_duration)` 并回到 idle。
+
+CloudV3 Java 最终按以下规则接收麦克风音频：
+
+- 只有已收到 MQTT `listen start` 且状态为 LISTENING 的 turn 才接收 UDP Opus。
+- idle、processing、speaking、旧 transport session 的 UDP 帧全部丢弃，不创建 provisional turn。
+- UDP 按 SSRC 分片到固定单线程 worker，同设备保序、不同设备并行，所有队列均有上限。
+- 逐帧日志默认关闭，使用 30 秒聚合流量日志。
+- ASR/AI/TTS 使用有界 worker pool；过载返回 `service_busy` 并结束当前会话。
+- 同设备重新 hello 时移除旧 SSRC，过期 UDP session 定期清理。
+
+这套约束用于支持上千设备在线。若要求上千设备同时持续说话，需要将 UDP gateway 按设备/SSRC 一致性哈希水平扩容，
+保证同一 transport session 始终由同一实例处理。
