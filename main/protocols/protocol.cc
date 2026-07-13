@@ -120,6 +120,28 @@ void Protocol::SendTtsRejected(const std::string& conversation_id, const std::st
     SendText(message);
 }
 
+void Protocol::SendAnnouncementPreparation(const std::string& state,
+                                           const std::string& request_id,
+                                           const std::string& conversation_id,
+                                           const std::string& turn_id,
+                                           const std::string& reason) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "system");
+    cJSON_AddStringToObject(root, "command", "prepare_announcement");
+    cJSON_AddStringToObject(root, "state", state.c_str());
+    cJSON_AddStringToObject(root, "request_id", request_id.c_str());
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "conversation_id", conversation_id.c_str());
+    cJSON_AddStringToObject(root, "turn_id", turn_id.c_str());
+    if (!reason.empty()) {
+        cJSON_AddStringToObject(root, "reason", reason.c_str());
+    }
+    char* json = cJSON_PrintUnformatted(root);
+    SendText(json == nullptr ? "{}" : json);
+    if (json != nullptr) cJSON_free(json);
+    cJSON_Delete(root);
+}
+
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
     SendText(message);

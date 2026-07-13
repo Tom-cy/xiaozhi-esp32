@@ -81,6 +81,11 @@ public:
     virtual void SendTtsReady(const std::string& conversation_id, const std::string& turn_id);
     virtual void SendTtsRejected(const std::string& conversation_id, const std::string& turn_id,
                                  const std::string& reason);
+    virtual void SendAnnouncementPreparation(const std::string& state,
+                                             const std::string& request_id,
+                                             const std::string& conversation_id,
+                                             const std::string& turn_id,
+                                             const std::string& reason = "");
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
     virtual void SendDeviceStatus(const std::string& state);

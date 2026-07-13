@@ -669,6 +669,51 @@ void Application::InitializeProtocol() {
                     Schedule([this]() {
                         Reboot();
                     });
+                } else if (strcmp(command->valuestring, "prepare_announcement") == 0) {
+                    auto request = cJSON_GetObjectItem(root, "request_id");
+                    auto conversation = cJSON_GetObjectItem(root, "conversation_id");
+                    auto turn = cJSON_GetObjectItem(root, "turn_id");
+                    std::string request_id = cJSON_IsString(request) ? request->valuestring : "";
+                    std::string conversation_id = cJSON_IsString(conversation) ? conversation->valuestring : "";
+                    std::string turn_id = cJSON_IsString(turn) ? turn->valuestring : "";
+                    Schedule([this, request_id, conversation_id, turn_id]() {
+                        auto reject = [this, &request_id, &conversation_id, &turn_id](const char* reason) {
+                            ESP_LOGW(TAG, "Reject announcement preparation request=%s reason=%s",
+                                request_id.c_str(), reason);
+                            protocol_->SendAnnouncementPreparation("rejected", request_id,
+                                conversation_id, turn_id, reason);
+                        };
+                        if (request_id.empty() || conversation_id.empty() || turn_id.empty()) {
+                            reject("invalid_identifiers");
+                            return;
+                        }
+                        if (GetDeviceState() != kDeviceStateIdle) {
+                            reject("device_busy");
+                            return;
+                        }
+                        SetDeviceState(kDeviceStateConnecting);
+                        bool opened = protocol_->OpenAudioChannel();
+                        SetDeviceState(kDeviceStateIdle);
+                        if (!opened || !protocol_->IsAudioChannelOpened()) {
+                            reject("audio_channel_open_failed");
+                            return;
+                        }
+
+                        auto probe = std::make_unique<AudioStreamPacket>();
+                        probe->sample_rate = protocol_->server_sample_rate();
+                        probe->frame_duration = protocol_->server_frame_duration();
+                        probe->timestamp = (uint32_t)(esp_timer_get_time() / 1000);
+                        probe->payload.push_back(0);
+                        if (!protocol_->SendAudio(std::move(probe))) {
+                            reject("udp_probe_failed");
+                            return;
+                        }
+                        ESP_LOGI(TAG, "Announcement prepared request=%s session=%s conversation=%s turn=%s",
+                            request_id.c_str(), protocol_->session_id().c_str(),
+                            conversation_id.c_str(), turn_id.c_str());
+                        protocol_->SendAnnouncementPreparation("prepared", request_id,
+                            conversation_id, turn_id);
+                    });
                 } else if (strcmp(command->valuestring, "continue_listening") == 0) {
                     auto idle_timeout = cJSON_GetObjectItem(root, "idle_timeout");
                     auto conversation = cJSON_GetObjectItem(root, "conversation_id");

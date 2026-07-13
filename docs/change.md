@@ -1061,3 +1061,32 @@ invalid_device_state
 | `main/application.cc` | idle announcement 接管、普通对话严格校验、明确拒绝 |
 | `main/protocols/protocol.h/.cc` | 新增 `SendTtsRejected` 上行消息 |
 | `CloudV3/.../XiaozhiVoiceRuntime.java` | UDP 预检、真实 session、announcement 和快速失败 |
+
+## 2026-07-14 修复 19：主动播报前重建 UDP 音频通道
+
+问题现象：`speak-test` 已支持 `mode=announcement` 和快速拒绝，但设备处于 idle 时 UDP socket 已关闭。Java 注册表仍可能保留旧 session 和 remote address，直接下发 `tts start` 会被固件以 `audio_channel_not_ready` 拒绝。仅重新发送 MQTT hello 也不够，因为 NAT 源端口可能随新 UDP socket 改变。
+
+本次修复：
+
+1. Java 在合成 TTS 前发布 `system/prepare_announcement`，携带唯一 `request_id` 及服务端生成的 conversation/turn。
+2. 固件仅在 idle 接受准备请求；必要时进入 connecting 并调用 `OpenAudioChannel()`。
+3. hello 成功后固件通过新 session 的 key/nonce 发送一字节加密 UDP probe。
+4. Java UDP registry 校验 probe、学习新 `remoteAddress`；固件随后回 `prepared` 并携带真实 `session_id`。
+5. Java 同时校验 request/conversation/turn/session，并确认该 session 已学习 remote address，之后才创建 announcement VoiceTurn、合成 TTS、发送 `tts start`。
+6. MQTT 与 UDP 可能乱序；`prepared` 先到时 Java 会短暂轮询同 session 的 probe 结果，不会回退到旧地址。
+7. 设备返回 `rejected/error` 时 Java 立即失败；准备阶段独立等待 12 秒以覆盖 hello 的 10 秒等待，不修改 TTS `mqttAckTimeoutMs`。
+8. 设备上行 goodbye 时 Java 按 deviceId 和 sessionId 移除 UDP session；旧 goodbye 不能删除新 hello 分配的 session。
+9. UDP probe 只用于 NAT 地址学习，不进入 ASR VoiceTurn，也不计为无活动语音丢包。
+10. 普通语音对话仍严格校验 conversation/turn，不使用 announcement 接管规则。
+
+失败原因包括：
+
+```text
+invalid_identifiers
+device_busy
+audio_channel_open_failed
+udp_probe_failed
+announcement_udp_probe_timeout
+```
+
+完整顺序：`prepare_announcement -> OpenAudioChannel -> hello -> 新 UDP session -> encrypted UDP probe -> prepared -> tts start -> tts ready -> UDP TTS`。
