@@ -1027,3 +1027,37 @@ ESP32 已进入 speaking
 7. 设备每 60 秒上报一次 `device_status` 心跳，支持云端区分在线、心跳异常、离线和未知状态。
 
 成功判据：日志出现 `Firmware upgrade successful` 并重启，随后新固件 OTA 请求上报目标 `appVersion`；只有云端确认该版本后才视为升级最终成功。
+
+## 2026-07-13 修复 18：支持管理端 announcement 主动播报
+
+问题现象：管理端调用 `speak-test` 时，Java 已完成 TTS 合成和 Opus 转码，也发布了 `tts start`，但设备只显示 `tts sentence_start` 文本，不播放声音；Java 等待 `tts ready` 5 秒后超时。
+
+根因：普通语音链路的 conversation/turn 由设备发起，固件可以严格校验服务端返回的标识；`speak-test` 则由服务端生成 `admin-test-*` conversation/turn。设备处于 idle 时没有这组本地标识，因此旧实现把管理端的 `tts start` 当作 stale 消息丢弃。`tts sentence_start` 不做该校验，所以仍能显示文字。
+
+本次修复：
+
+1. Java 对管理端主动播报的 `tts start` 增加 `mode=announcement`。
+2. 固件只允许 `announcement` 在 idle、音频通道已就绪且 conversation/turn 非空时接管服务端标识。
+3. 普通对话继续执行严格的 conversation/turn 匹配，禁止跨 turn 音频串线。
+4. 固件无法接受 `tts start` 时返回 `type=tts,state=rejected,reason=...`，Java 可立即失败，不再只能等待超时。
+5. Java 在合成前检查 UDP session 和已学习的 remote address，并使用真实 UDP `session_id` 创建播报 turn。
+
+拒绝原因包括：
+
+```text
+invalid_identifiers
+device_busy
+audio_channel_not_ready
+conversation_mismatch
+invalid_device_state
+```
+
+当前修复不会通过增大 `mqttAckTimeoutMs` 掩盖协议错误。设备未接受播报时必须明确拒绝；只有收到匹配的 `tts ready` 后 Java 才开始 UDP 下发。
+
+影响文件：
+
+| 文件 | 说明 |
+|------|------|
+| `main/application.cc` | idle announcement 接管、普通对话严格校验、明确拒绝 |
+| `main/protocols/protocol.h/.cc` | 新增 `SendTtsRejected` 上行消息 |
+| `CloudV3/.../XiaozhiVoiceRuntime.java` | UDP 预检、真实 session、announcement 和快速失败 |

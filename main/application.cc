@@ -559,12 +559,37 @@ void Application::InitializeProtocol() {
             if (strcmp(state->valuestring, "start") == 0) {
                 auto conversation = cJSON_GetObjectItem(root, "conversation_id");
                 auto turn = cJSON_GetObjectItem(root, "turn_id");
+                auto mode = cJSON_GetObjectItem(root, "mode");
                 std::string conversation_id = cJSON_IsString(conversation) ? conversation->valuestring : "";
                 std::string turn_id = cJSON_IsString(turn) ? turn->valuestring : "";
-                Schedule([this, conversation_id, turn_id]() {
-                    if (!MatchesConversationTurn(conversation_id, turn_id)) {
+                std::string tts_mode = cJSON_IsString(mode) ? mode->valuestring : "";
+                Schedule([this, conversation_id, turn_id, tts_mode]() {
+                    const bool announcement = tts_mode == "announcement";
+                    if (announcement) {
+                        if (conversation_id.empty() || turn_id.empty()) {
+                            ESP_LOGW(TAG, "Reject announcement tts start: missing conversation/turn");
+                            protocol_->SendTtsRejected(conversation_id, turn_id, "invalid_identifiers");
+                            return;
+                        }
+                        if (GetDeviceState() != kDeviceStateIdle) {
+                            ESP_LOGW(TAG, "Reject announcement tts start: device state=%d", (int)GetDeviceState());
+                            protocol_->SendTtsRejected(conversation_id, turn_id, "device_busy");
+                            return;
+                        }
+                        if (!protocol_->IsAudioChannelOpened()) {
+                            ESP_LOGW(TAG, "Reject announcement tts start: audio channel not ready");
+                            protocol_->SendTtsRejected(conversation_id, turn_id, "audio_channel_not_ready");
+                            return;
+                        }
+                        conversation_id_ = conversation_id;
+                        active_turn_id_ = turn_id;
+                        continuous_conversation_active_ = false;
+                        ESP_LOGI(TAG, "Accept announcement tts start conversation=%s turn=%s",
+                            conversation_id.c_str(), turn_id.c_str());
+                    } else if (!MatchesConversationTurn(conversation_id, turn_id)) {
                         ESP_LOGW(TAG, "Ignore stale tts start conversation=%s turn=%s",
                             conversation_id.c_str(), turn_id.c_str());
+                        protocol_->SendTtsRejected(conversation_id, turn_id, "conversation_mismatch");
                         return;
                     }
                     aborted_ = false;
@@ -573,6 +598,8 @@ void Application::InitializeProtocol() {
                     audio_service_.ResetDecoder();
                     if (SetDeviceState(kDeviceStateSpeaking) || GetDeviceState() == kDeviceStateSpeaking) {
                         protocol_->SendTtsReady(conversation_id_, active_turn_id_);
+                    } else {
+                        protocol_->SendTtsRejected(conversation_id, turn_id, "invalid_device_state");
                     }
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {

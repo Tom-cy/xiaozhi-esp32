@@ -111,6 +111,15 @@ void Protocol::SendTtsReady(const std::string& conversation_id, const std::strin
     SendText(message);
 }
 
+void Protocol::SendTtsRejected(const std::string& conversation_id, const std::string& turn_id,
+                               const std::string& reason) {
+    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"tts\",\"state\":\"rejected\"";
+    message += ",\"conversation_id\":\"" + conversation_id + "\"";
+    message += ",\"turn_id\":\"" + turn_id + "\"";
+    message += ",\"reason\":\"" + reason + "\"}";
+    SendText(message);
+}
+
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
     SendText(message);
