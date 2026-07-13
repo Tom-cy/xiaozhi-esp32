@@ -268,6 +268,9 @@ void Application::Run() {
             if (clock_ticks_ % 10 == 0) {
                 SystemInfo::PrintHeapStats();
             }
+            if (clock_ticks_ % 60 == 0 && protocol_) {
+                protocol_->SendDeviceStatus("online");
+            }
             MaybeAutoStopListening("tick");
             MaybeAutoStopSpeaking("tick");
         }
@@ -346,8 +349,10 @@ void Application::ActivationTask() {
     // Check for new firmware version
     CheckNewVersion();
 
-    // Initialize the protocol
-    InitializeProtocol();
+    // Upgrade flow may initialize MQTT early so progress can be reported.
+    if (!protocol_) {
+        InitializeProtocol();
+    }
 
     // Signal completion to main loop
     xEventGroupSetBits(event_group_, MAIN_EVENT_ACTIVATION_DONE);
@@ -449,6 +454,10 @@ void Application::CheckNewVersion() {
         retry_delay = 10; // Reset retry delay
 
         if (ota_->HasNewVersion()) {
+            // OTA status is reported over MQTT, so establish the protocol before downloading.
+            if (!protocol_) {
+                InitializeProtocol();
+            }
             if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
                 return; // This line will never be reached after reboot
             }
@@ -504,6 +513,9 @@ void Application::InitializeProtocol() {
 
     protocol_->OnConnected([this]() {
         DismissAlert();
+        Schedule([this]() {
+            if (protocol_) protocol_->SendDeviceStatus("online");
+        });
     });
 
     protocol_->OnNetworkError([this](const std::string& message) {
@@ -1262,6 +1274,10 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
         Schedule([display, message = std::string(buffer)]() {
             display->SetChatMessage("system", message.c_str());
         });
+    }, [this, version](const OtaStatus& status) {
+        if (protocol_) {
+            protocol_->SendOtaStatus(status, version);
+        }
     });
 
     if (!upgrade_success) {

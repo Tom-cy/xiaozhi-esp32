@@ -6,6 +6,7 @@
 #include <functional>
 #include <chrono>
 #include <vector>
+#include "ota.h"
 
 struct AudioStreamPacket {
     int sample_rate = 0;
@@ -80,6 +81,8 @@ public:
     virtual void SendTtsReady(const std::string& conversation_id, const std::string& turn_id);
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
+    virtual void SendDeviceStatus(const std::string& state);
+    virtual void SendOtaStatus(const OtaStatus& status, const std::string& version);
 
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;
@@ -102,4 +105,3 @@ protected:
 };
 
 #endif // PROTOCOL_H
-

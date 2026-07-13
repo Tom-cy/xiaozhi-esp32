@@ -1,6 +1,8 @@
 #include "protocol.h"
 
 #include <esp_log.h>
+#include <esp_app_desc.h>
+#include <esp_timer.h>
 
 #define TAG "Protocol"
 
@@ -112,6 +114,35 @@ void Protocol::SendTtsReady(const std::string& conversation_id, const std::strin
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
     SendText(message);
+}
+
+void Protocol::SendDeviceStatus(const std::string& state) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "device_status");
+    cJSON_AddStringToObject(root, "state", state.c_str());
+    cJSON_AddNumberToObject(root, "uptime_ms", esp_timer_get_time() / 1000);
+    cJSON_AddStringToObject(root, "app_version", esp_app_get_description()->version);
+    char* json = cJSON_PrintUnformatted(root);
+    SendText(json == nullptr ? "{}" : json);
+    if (json != nullptr) cJSON_free(json);
+    cJSON_Delete(root);
+}
+
+void Protocol::SendOtaStatus(const OtaStatus& status, const std::string& version) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ota");
+    cJSON_AddStringToObject(root, "state", status.state.c_str());
+    cJSON_AddStringToObject(root, "version", version.c_str());
+    cJSON_AddNumberToObject(root, "progress", status.progress);
+    cJSON_AddNumberToObject(root, "downloaded_bytes", status.downloaded_bytes);
+    cJSON_AddNumberToObject(root, "total_bytes", status.total_bytes);
+    cJSON_AddNumberToObject(root, "retry_count", status.retry_count);
+    if (!status.error_code.empty()) cJSON_AddStringToObject(root, "error_code", status.error_code.c_str());
+    if (!status.error_message.empty()) cJSON_AddStringToObject(root, "error_message", status.error_message.c_str());
+    char* json = cJSON_PrintUnformatted(root);
+    SendText(json == nullptr ? "{}" : json);
+    if (json != nullptr) cJSON_free(json);
+    cJSON_Delete(root);
 }
 
 bool Protocol::IsTimeout() const {

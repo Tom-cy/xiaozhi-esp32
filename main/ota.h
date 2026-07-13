@@ -7,6 +7,16 @@
 #include <esp_err.h>
 #include "board.h"
 
+struct OtaStatus {
+    std::string state;
+    int progress = 0;
+    size_t downloaded_bytes = 0;
+    size_t total_bytes = 0;
+    int retry_count = 0;
+    std::string error_code;
+    std::string error_message;
+};
+
 class Ota {
 public:
     Ota();
@@ -21,7 +31,9 @@ public:
     bool HasActivationCode() { return has_activation_code_; }
     bool HasServerTime() { return has_server_time_; }
     bool StartUpgrade(std::function<void(int progress, size_t speed)> callback);
-    static bool Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback);
+    static bool Upgrade(const std::string& firmware_url,
+                        std::function<void(int progress, size_t speed)> callback,
+                        std::function<void(const OtaStatus& status)> status_callback = nullptr);
     void MarkCurrentVersionValid();
 
     const std::string& GetFirmwareVersion() const { return firmware_version_; }

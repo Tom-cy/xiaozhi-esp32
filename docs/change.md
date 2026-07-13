@@ -1011,3 +1011,19 @@ ESP32 已进入 speaking
 2. `AudioService` 在语音处理启停时清除公开 VAD 状态。
 3. `AfeAudioProcessor` 在启停时清除内部 speaking 状态，确保新一轮能正常产生 speech/silence 状态变化。
 4. 15 秒硬上限继续优先于 VAD 判断，并将协议原因统一为 `max_duration`。
+
+## 2026-07-13 修复 17：OTA 超时、自动重试、断点续传与状态上报
+
+问题现象：固件下载到 54% 后出现 HTTP/TLS 读取超时，原实现立即 `esp_ota_abort`，设备重启后只能从 0 重新下载，后台也无法区分“已下发”和“升级成功”。
+
+修复：
+
+1. OTA HTTP 读取超时从默认 30 秒提高到 90 秒。
+2. 下载失败最多自动重试 3 次，采用 2/4/6 秒退避。
+3. 重试携带 `Range: bytes={downloaded}-`，只接受偏移和总长度匹配的 `206 Partial Content`。
+4. 重试期间保留 OTA handle、顺序写入位置和未满 4KB 页缓冲，避免重复写入或丢失尾部字节。
+5. 增加固件大小、Content-Range、镜像头、分区写入和最终镜像校验保护。
+6. OTA 期间提前建立 MQTT，按 5% 进度上报 `downloading/retrying/downloaded/success/failed`、字节数、重试次数和错误码。
+7. 设备每 60 秒上报一次 `device_status` 心跳，支持云端区分在线、心跳异常、离线和未知状态。
+
+成功判据：日志出现 `Firmware upgrade successful` 并重启，随后新固件 OTA 请求上报目标 `appVersion`；只有云端确认该版本后才视为升级最终成功。
