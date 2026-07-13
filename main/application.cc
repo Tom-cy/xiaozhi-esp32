@@ -1123,8 +1123,10 @@ bool Application::MatchesConversationTurn(const std::string& conversation_id,
 void Application::ResetListeningSilenceTimer() {
     int64_t now = esp_timer_get_time();
     listening_started_at_us_ = now;
-    last_voice_activity_at_us_ = now;
-    listening_had_voice_ = audio_service_.IsVoiceDetected();
+    last_voice_activity_at_us_ = 0;
+    // A listening turn must not inherit VAD state from wake-word detection or
+    // the previous turn. Only a VAD speech event in this turn starts silence timing.
+    listening_had_voice_ = false;
     pending_listening_stop_reason_ = kListeningStopReasonManual;
 }
 
@@ -1206,7 +1208,7 @@ const char* Application::ListeningStopReasonToString(ListeningStopReason reason)
         case kListeningStopReasonNoSpeechTimeout:
             return "no_speech_timeout";
         case kListeningStopReasonMaxDuration:
-            return "max_listening_timeout";
+            return "max_duration";
         case kListeningStopReasonServerWatchdog:
             return "server_watchdog";
         case kListeningStopReasonManual:
@@ -1387,4 +1389,3 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
-

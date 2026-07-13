@@ -862,7 +862,7 @@ enum ListeningStopReason {
 ```text
 no_speech_timeout: 进入 listening 后 5 秒没有检测到人声，自动 stop
 vad_silence: 检测到过人声后，最后一次人声后静音 1.2 秒自动 stop
-max_listening_timeout: listening 超过 15 秒自动 stop
+max_duration: listening 超过 15 秒自动 stop
 manual: 用户或系统主动停止
 ```
 
@@ -995,3 +995,19 @@ ESP32 已进入 speaking
 4. 状态进入 idle 后由既有状态机关闭 voice processing、恢复唤醒词检测，停止麦克风 UDP 上行。
 
 该修复保证任何 VAD 状态下单轮麦克风采集都有确定上限，避免异常设备持续占用 Java UDP、日志、内存和 ASR 资源。
+
+## 2026-07-13 修复 16：清理跨轮残留 VAD 状态
+
+问题现象：唤醒后即使用户已经说完，设备仍可能等到 15 秒硬上限才发送 `listen stop`，`vad_silence` 和
+`no_speech_timeout` 看起来没有生效。
+
+根因：音频处理器停止和重新启动时没有清除 `is_speaking_` / `voice_detected_`，新一轮 listening 又从
+`IsVoiceDetected()` 初始化 `listening_had_voice_`。如果上一轮或唤醒阶段留下 `true`，每次 watchdog 检查都会
+刷新最后人声时间，使 1.2 秒静音和 5 秒无人声判断都无法到达，只剩 15 秒硬上限兜底。
+
+修复：
+
+1. 每轮 listening 固定从“尚未检测到人声”开始，首次 VAD speech 事件才启动静音计时。
+2. `AudioService` 在语音处理启停时清除公开 VAD 状态。
+3. `AfeAudioProcessor` 在启停时清除内部 speaking 状态，确保新一轮能正常产生 speech/silence 状态变化。
+4. 15 秒硬上限继续优先于 VAD 判断，并将协议原因统一为 `max_duration`。
