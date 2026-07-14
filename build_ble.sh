@@ -13,6 +13,34 @@ set -e
 BOARD="bread-compact-wifi"
 VARIANT="bread-compact-wifi-ble"
 TARGET="esp32s3"
+FIRMWARE_VERSION="${FIRMWARE_VERSION:-}"
+CLEAN_BUILD=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --clean)
+            CLEAN_BUILD=1
+            ;;
+        *)
+            if [[ -n "$FIRMWARE_VERSION" ]]; then
+                echo "Usage: ./build_ble.sh <version> [--clean]"
+                exit 1
+            fi
+            FIRMWARE_VERSION="$arg"
+            ;;
+    esac
+done
+
+if [[ -z "$FIRMWARE_VERSION" ]]; then
+    echo "Usage: ./build_ble.sh <version> [--clean]"
+    echo "Example: ./build_ble.sh 2.3.1 --clean"
+    echo "Or: FIRMWARE_VERSION=2.3.1 ./build_ble.sh --clean"
+    exit 1
+fi
+if [[ ! "$FIRMWARE_VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
+    echo "Invalid firmware version: $FIRMWARE_VERSION (expected: 2.3.1)"
+    exit 1
+fi
 
 # ── 颜色输出 ────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -80,7 +108,7 @@ CONFIG_SR_MN_CN_MULTINET7_QUANT=y
 EOF
 
 # ── 清理旧构建（可选，加 --clean 参数触发）───────────────────
-if [[ "$1" == "--clean" ]]; then
+if [[ "$CLEAN_BUILD" == "1" ]]; then
     warn "清理旧构建目录..."
     rm -rf build sdkconfig
 fi
@@ -94,25 +122,34 @@ info "已清除旧 sdkconfig 和 CMake 缓存"
 info "设置目标芯片: $TARGET（含 BLE defaults）"
 idf.py \
   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.ble" \
+  -DPROJECT_VER="$FIRMWARE_VERSION" \
   set-target "$TARGET"
 
 # ── 构建 ─────────────────────────────────────────────────────
+info "固件版本: $FIRMWARE_VERSION"
 info "开始构建（约 3-8 分钟）..."
-idf.py -DBOARD_NAME="$VARIANT" -DBOARD_TYPE="$BOARD" build
+idf.py -DPROJECT_VER="$FIRMWARE_VERSION" -DBOARD_NAME="$VARIANT" -DBOARD_TYPE="$BOARD" build
 
 # ── 合并为单文件 ─────────────────────────────────────────────
 info "合并 bin 文件..."
 idf.py merge-bin
 
 # ── 输出结果 ─────────────────────────────────────────────────
+OTA_BIN="build/xiaozhi.bin"
 MERGED="build/merged-binary.bin"
-SIZE=$(du -sh "$MERGED" 2>/dev/null | cut -f1)
+VERSIONED_OTA="build/xiaozhi-${FIRMWARE_VERSION}.bin"
+[[ -f "$OTA_BIN" ]] || error "OTA app binary not found: $OTA_BIN"
+[[ -f "$MERGED" ]] || error "Merged flash binary not found: $MERGED"
+cp "$OTA_BIN" "$VERSIONED_OTA"
+OTA_SIZE=$(du -sh "$OTA_BIN" 2>/dev/null | cut -f1)
+MERGED_SIZE=$(du -sh "$MERGED" 2>/dev/null | cut -f1)
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  构建 + 烧录完成！                        ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║  输出文件: ${MERGED}${NC}"
-echo -e "${GREEN}║  文件大小: ${SIZE}${NC}"
+echo -e "${GREEN}OTA 上传文件: ${VERSIONED_OTA} (${OTA_SIZE})${NC}"
+echo -e "${GREEN}整包烧录文件: ${MERGED} (${MERGED_SIZE})${NC}"
+echo -e "${GREEN}固件版本: ${FIRMWARE_VERSION}${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  查看日志：idf.py monitor                ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"

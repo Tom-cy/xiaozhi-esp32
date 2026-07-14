@@ -417,6 +417,9 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
+    // Confirm a healthy newly booted image before checking for another OTA.
+    ota_->MarkCurrentVersionValid();
+
     const int MAX_RETRY = 10;
     int retry_count = 0;
     int retry_delay = 10; // Initial retry delay in seconds
@@ -464,8 +467,6 @@ void Application::CheckNewVersion() {
             // If upgrade failed, continue to normal operation
         }
 
-        // No new version, mark the current version as valid
-        ota_->MarkCurrentVersionValid();
         if (!ota_->HasActivationCode() && !ota_->HasActivationChallenge()) {
             // Exit the loop if done checking new version
             break;

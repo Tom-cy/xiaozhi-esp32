@@ -261,7 +261,10 @@ void Ota::MarkCurrentVersionValid() {
 
     if (state == ESP_OTA_IMG_PENDING_VERIFY) {
         ESP_LOGI(TAG, "Marking firmware as valid");
-        esp_ota_mark_app_valid_cancel_rollback();
+        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to mark firmware as valid: %s", esp_err_to_name(err));
+        }
     }
 }
 
