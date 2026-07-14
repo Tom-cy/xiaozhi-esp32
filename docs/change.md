@@ -1090,3 +1090,19 @@ announcement_udp_probe_timeout
 ```
 
 完整顺序：`prepare_announcement -> OpenAudioChannel -> hello -> 新 UDP session -> encrypted UDP probe -> prepared -> tts start -> tts ready -> UDP TTS`。
+
+## 2026-07-14 修复 20：后台 OTA 动态版本与镜像确认顺序
+
+问题根因：后台把上传记录标记为 `2.3.1`，但固件 `CMakeLists.txt` 固定 `PROJECT_VER=2.3.0`。升级后的镜像仍上报 2.3.0，服务端再次下发 2.3.1；当前镜像尚处于 `ESP_OTA_IMG_PENDING_VERIFY`，第二次 `esp_ota_begin` 被回滚保护拒绝。
+
+修复：
+
+1. 删除 CMake 固定版本，`build_ble.sh` 必须通过参数或 `FIRMWARE_VERSION` 环境变量注入版本。
+2. 构建命令改为 `./build_ble.sh 2.3.1 --clean`，后续版本只改参数，不改源码。
+3. 输出 `build/xiaozhi-<version>.bin` 作为后台 OTA 上传文件。
+4. `build/merged-binary.bin` 只用于整包烧录，不得上传到 OTA 后台。
+5. 固件在完成网络和资源初始化后、检查下一次 OTA 之前确认当前待验证镜像。
+6. 记录 `esp_ota_mark_app_valid_cancel_rollback` 的真实失败原因。
+7. CloudV3 上传固件时读取 ESP-IDF app descriptor，并校验后台版本与 bin 内嵌版本一致。
+
+这样后台继续负责固件文件、板型、默认版本、设备策略和强制升级；固件版本由每次构建动态注入，服务端与设备以镜像内嵌版本作为一致性依据。
