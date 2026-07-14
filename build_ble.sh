@@ -7,7 +7,7 @@
 #每次打开终端激活环境
 # source ~/esp/esp-idf/export.sh
 # 构建固件
-# ./build_ble.sh
+# ./build_ble.sh 2.3.1 --clean
 set -e
 
 BOARD="bread-compact-wifi"
