@@ -216,5 +216,5 @@ git submodule update --init --recursive
 | 广播名称 | `Xiaozhi-XXXX`（MAC 后 4 位） |
 | 唤醒词 | 小鹿小鹿（`xiao lu xiao lu`） |
 | 唤醒词模型 | MultiNet7 中文量化版 |
-| OTA 默认地址 | `https://tea.iskaola.com/xiaozhi/ota/` |
+| OTA 默认地址 | `https://api.iskaola.com/xiaozhi/ota/` |
 | 串口波特率 | 115200 |
