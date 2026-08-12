@@ -628,6 +628,9 @@ void Application::InitializeProtocol() {
                         EnsureActiveTurn();
                         SetListeningMode(kListeningModeAutoStop);
                     } else {
+                        if (protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel(false);
+                        }
                         ClearConversation();
                         SetDeviceState(kDeviceStateIdle);
                     }
@@ -759,6 +762,9 @@ void Application::InitializeProtocol() {
                                 && conversation_id != conversation_id_) {
                             ESP_LOGW(TAG, "Ignore stale end_session conversation=%s", conversation_id.c_str());
                             return;
+                        }
+                        if (protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel(false);
                         }
                         ClearConversation();
                         auto state = GetDeviceState();

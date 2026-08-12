@@ -165,6 +165,16 @@ void OledDisplay::SetChatMessage(const char* role, const char* content) {
     }
 }
 
+void OledDisplay::ClearChatMessages() {
+    DisplayLockGuard lock(this);
+    if (chat_message_label_ != nullptr) {
+        lv_label_set_text(chat_message_label_, "");
+    }
+    if (content_right_ != nullptr) {
+        lv_obj_add_flag(content_right_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void OledDisplay::SetupUI_128x64() {
     DisplayLockGuard lock(this);
 

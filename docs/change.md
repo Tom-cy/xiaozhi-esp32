@@ -1106,3 +1106,43 @@ announcement_udp_probe_timeout
 7. CloudV3 上传固件时读取 ESP-IDF app descriptor，并校验后台版本与 bin 内嵌版本一致。
 
 这样后台继续负责固件文件、板型、默认版本、设备策略和强制升级；固件版本由每次构建动态注入，服务端与设备以镜像内嵌版本作为一致性依据。
+
+## 2026-08-12 修复 21：管理端文字播放与音频通道完整释放
+
+目标：管理员在设备管理页输入文字后，让指定在线 ESP32 通过现有 MQTT 控制面和 UDP 音频面播放合成语音，并保证播放结束后设备能够正常进入下一轮唤醒。
+
+本次升级：
+
+1. 管理端设备列表提供“播放声音”入口，弹框输入不超过 500 字的文本后调用 `POST /system-api/ai/device/tool/speak-test`。
+2. Java 接口校验当前用户拥有目标设备，随后按 `prepare_announcement -> prepared -> tts start -> tts ready -> UDP TTS -> tts stop` 执行主动播放。
+3. 固件继续只在 `idle` 状态接受 `announcement`，复用修复 19 的新 UDP session 与 NAT 地址学习流程。
+4. 修复普通会话收到 `system/end_session` 时只切换状态、未关闭音频通道的问题；现在会调用 `CloseAudioChannel(false)`。
+5. 修复主动播放收到 `tts stop` 且 `next_state=idle` 时未关闭音频通道的问题，避免后续唤醒误判旧通道仍打开。
+6. `tts stop` 的 `next_state=listening` 分支不关闭通道，确保连续对话仍可复用当前 UDP 会话。
+
+验证标准：
+
+```text
+管理端输入文字并点击播放
+-> 固件收到 prepare_announcement
+-> 固件返回 prepared
+-> 固件收到 announcement tts start 并返回 tts ready
+-> 扬声器播放完整语音
+-> 固件收到 tts stop(next_state=idle)
+-> 音频通道关闭，状态回到 idle
+-> 再次唤醒可重新建立音频通道并进入 listening
+```
+
+## 2026-08-12 修复 22：OLED 待机时清除播放文字
+
+问题现象：管理端文字播放结束后，设备状态已经回到 `idle`，状态栏也显示“待命”，但 OLED 仍保留上一条播报文字。
+
+根因：状态机进入 `idle` 时统一调用 `Display::ClearChatMessages()`，LCD 已实现该接口，但 `OledDisplay` 未覆盖，最终执行的是基类空实现。
+
+修复：
+
+1. `OledDisplay` 实现 `ClearChatMessages()`，清空 `chat_message_label_`。
+2. 128x64 双栏布局同时隐藏 `content_right_`，避免空白正文区域继续占位。
+3. 修复覆盖所有进入待机的路径，包括正常 `tts stop(next_state=idle)`、`system/end_session`、TTS 超时和音频通道关闭。
+
+验证标准：后台播放完成后，状态切换为“待命”，上一条播放文字立即从 OLED 消失；再次唤醒与播放不受影响。
