@@ -152,7 +152,8 @@ private:
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
-    int clock_ticks_ = 0;
+    int64_t clock_ticks_ = 0;
+    int64_t next_device_status_tick_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     int64_t listening_started_at_us_ = 0;
     int64_t last_voice_activity_at_us_ = 0;
@@ -188,6 +189,7 @@ private:
     void CheckAssetsVersion();
     void CheckNewVersion();
     void InitializeProtocol();
+    void ScheduleNextDeviceStatus();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;

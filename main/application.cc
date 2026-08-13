@@ -13,6 +13,7 @@
 #include <cstring>
 #include <algorithm>
 #include <esp_log.h>
+#include <esp_random.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -26,6 +27,8 @@ constexpr int64_t kPostVoiceSilenceTimeoutUs = 1200000;
 constexpr int64_t kMaxListeningDurationUs = 15000000;
 constexpr int64_t kTtsFirstPacketTimeoutUs = 8000000;
 constexpr int64_t kTtsPlaybackIdleTimeoutUs = 3000000;
+constexpr int64_t kDeviceStatusIntervalSeconds = 60;
+constexpr int64_t kDeviceStatusJitterSeconds = 10;
 }
 
 Application::Application() {
@@ -268,8 +271,9 @@ void Application::Run() {
             if (clock_ticks_ % 10 == 0) {
                 SystemInfo::PrintHeapStats();
             }
-            if (clock_ticks_ % 60 == 0 && protocol_) {
+            if (protocol_ && next_device_status_tick_ > 0 && clock_ticks_ >= next_device_status_tick_) {
                 protocol_->SendDeviceStatus("online");
+                ScheduleNextDeviceStatus();
             }
             MaybeAutoStopListening("tick");
             MaybeAutoStopSpeaking("tick");
@@ -515,7 +519,10 @@ void Application::InitializeProtocol() {
     protocol_->OnConnected([this]() {
         DismissAlert();
         Schedule([this]() {
-            if (protocol_) protocol_->SendDeviceStatus("online");
+            if (protocol_) {
+                protocol_->SendDeviceStatus("online");
+                ScheduleNextDeviceStatus();
+            }
         });
     });
 
@@ -804,6 +811,12 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->Start();
+}
+
+void Application::ScheduleNextDeviceStatus() {
+    constexpr uint32_t jitter_range = kDeviceStatusJitterSeconds * 2 + 1;
+    const int64_t jitter = static_cast<int64_t>(esp_random() % jitter_range) - kDeviceStatusJitterSeconds;
+    next_device_status_tick_ = clock_ticks_ + kDeviceStatusIntervalSeconds + jitter;
 }
 
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {

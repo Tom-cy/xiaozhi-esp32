@@ -2,10 +2,10 @@
 menu "Xiaozhi Assistant"
 
 config OTA_URL
-    string "Default OTA URL"
-    default "https://api.iskaola.com/xiaozhi/ota/"
+    string "Fallback OTA URL"
+    default ""
     help
-        The application will access this URL to check for new firmwares and server address.
+        Optional fallback OTA URL. Leave empty for BLE provisioning only.
 
 choice
     prompt "Flash Assets"

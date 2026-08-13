@@ -46,11 +46,7 @@ Ota::~Ota() {
 
 std::string Ota::GetCheckVersionUrl() {
     Settings settings("wifi", false);
-    std::string url = settings.GetString("ota_url");
-    if (url.empty()) {
-        url = CONFIG_OTA_URL;
-    }
-    return url;
+    return settings.GetString("ota_url");
 }
 
 std::unique_ptr<Http> Ota::SetupHttp() {
@@ -85,7 +81,7 @@ esp_err_t Ota::CheckVersion() {
 
     std::string url = GetCheckVersionUrl();
     if (url.length() < 10) {
-        ESP_LOGE(TAG, "Check version URL is not properly set");
+        ESP_LOGE(TAG, "Check version URL is not set; provision ota_url over BLE first");
         return ESP_ERR_INVALID_ARG;
     }
 
